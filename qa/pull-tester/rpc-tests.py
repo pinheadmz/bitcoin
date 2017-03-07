@@ -199,7 +199,7 @@ def runtests():
 
     if print_help:
         # Only print help of the first script and exit
-        subprocess.check_call((RPC_TESTS_DIR + test_list[0]).split() + ['-h'])
+        subprocess.check_call([(RPC_TESTS_DIR + test_list[0])] + ['-h'])
         sys.exit(0)
 
     coverage = None
@@ -273,7 +273,7 @@ class RPCTestHandler:
             log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16)
             self.jobs.append((t,
                               time.time(),
-                              subprocess.Popen((RPC_TESTS_DIR + t).split() + self.flags + port_seed,
+                              subprocess.Popen([(RPC_TESTS_DIR + t)] + self.flags + port_seed,
                                                universal_newlines=True,
                                                stdout=log_stdout,
                                                stderr=log_stderr),
