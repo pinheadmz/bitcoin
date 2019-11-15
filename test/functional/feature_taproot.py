@@ -15,6 +15,7 @@ from collections import namedtuple
 from io import BytesIO
 import random
 import struct
+import json
 
 EMPTYWITNESS_ERROR = "non-mandatory-script-verify-flag (Witness program was passed an empty witness) (code 64)"
 INVALIDKEYPATHSIG_ERROR = "non-mandatory-script-verify-flag (Invalid signature for Taproot key path spending) (code 64)"
@@ -117,8 +118,9 @@ def damage_bytes(b):
 #   - An input position (int)
 #   - The spent UTXOs by this transaction (list of CTxOut)
 #   - Whether to produce a valid spend (bool)
+# - The annex
 
-Spender = namedtuple("Spender", "script,address,comment,is_standard,sat_function")
+Spender = namedtuple("Spender", "script,address,comment,is_standard,sat_function,annex")
 
 def spend_single_sig(tx, input_index, spent_utxos, info, key, annex=None, hashtype=0, prefix=None, suffix=None, script=None, pos=-1, damage=False):
     if prefix is None:
@@ -180,6 +182,7 @@ def spend_single_sig(tx, input_index, spent_utxos, info, key, annex=None, hashty
     if damage_type == 4:
         ret = [random_bytes(random.randrange(5))] + ret
     tx.wit.vtxinwit[input_index].scriptWitness.stack = ret
+    return [sighash, script]
 
 def spend_alwaysvalid(tx, input_index, info, script, annex=None, damage=False):
     if isinstance(script, tuple):
@@ -204,6 +207,7 @@ def spend_alwaysvalid(tx, input_index, info, script, annex=None, damage=False):
         for i in range(random.randint(1, 10)):
             ret = [random_bytes(random.randint(0, MAX_SCRIPT_ELEMENT_SIZE * 2))] + ret
     tx.wit.vtxinwit[input_index].scriptWitness.stack = ret
+    return [None, script]
 
 def spender_sighash_mutation(spenders, info, comment, standard=True, **kwargs):
     spk = info[0]
@@ -211,8 +215,7 @@ def spender_sighash_mutation(spenders, info, comment, standard=True, **kwargs):
 
     def fn(t, i, u, v):
         return spend_single_sig(t, i, u, damage=not v, info=info, **kwargs)
-
-    spenders.append(Spender(script=spk, address=addr, comment=comment, is_standard=standard, sat_function=fn))
+    spenders.append(Spender(script=spk, address=addr, comment=comment, is_standard=standard, sat_function=fn, annex=kwargs['annex']))
 
 def spender_two_paths(spenders, info, comment, standard, success, failure):
     spk = info[0]
@@ -220,8 +223,8 @@ def spender_two_paths(spenders, info, comment, standard, success, failure):
 
     def fn(t, i, u, v):
         return spend_single_sig(t, i, u, damage=False, info=info, **(success if v else failure))
+    spenders.append(Spender(script=spk, address=addr, comment=comment, is_standard=standard, sat_function=fn, annex=success['annex']))
 
-    spenders.append(Spender(script=spk, address=addr, comment=comment, is_standard=standard, sat_function=fn))
 
 def spender_alwaysvalid(spenders, info, comment, **kwargs):
     spk = info[0]
@@ -229,8 +232,8 @@ def spender_alwaysvalid(spenders, info, comment, **kwargs):
 
     def fn(t, i, u, v):
         return spend_alwaysvalid(t, i, damage=not v, info=info, **kwargs)
+    spenders.append(Spender(script=spk, address=addr, comment=comment, is_standard=False, sat_function=fn, annex=kwargs['annex']))
 
-    spenders.append(Spender(script=spk, address=addr, comment=comment, is_standard=False, sat_function=fn))
 
 def nested_script(script, depth):
     if depth == 0:
@@ -275,6 +278,9 @@ class TAPROOTTest(BitcoinTestFramework):
         the transaction. This is accomplished by constructing transactions consisting
         of all valid inputs, except one invalid one.
         """
+
+        # Create JSON file with all test cases
+        tests = []
 
         # Construct a UTXO to spend for each of the spenders
         self.nodes[0].generate(110)
@@ -328,6 +334,13 @@ class TAPROOTTest(BitcoinTestFramework):
         block = self.nodes[0].getblock(self.lastblockhash)
         self.lastblockheight = block['height']
         self.lastblocktime = block['time']
+
+        # Store all the UTXOs before they are consumed
+        utxosJSON = {}
+        for utxo in utxos:
+            key = str(utxo.input.hash.to_bytes(32, 'little').hex()) + utxo.input.n.to_bytes(4, 'little').hex()
+            utxosJSON[key] = {"value": utxo.output.nValue, "scriptPubKey": utxo.output.scriptPubKey.hex()}
+
         while len(utxos):
             tx = CTransaction()
             tx.nVersion = random.choice([1, 2, random.randint(-0x80000000, 0x7fffffff)])
@@ -370,6 +383,13 @@ class TAPROOTTest(BitcoinTestFramework):
 
             # For each inputs, make it fail once; then succeed once
             for fail_input in range(inputs + 1):
+                # Add input data to output JSON
+                inputsJSON = []
+                for i in range(inputs):
+                    inputJSON = {
+                        "comment": input_utxos[i].spender.comment,
+                        "annex": input_utxos[i].spender.annex.hex() if input_utxos[i].spender.annex else None}
+                    inputsJSON.append(inputJSON)
                 # Wipe scriptSig/witness
                 for i in range(inputs):
                     tx.vin[i].scriptSig = CScript()
@@ -377,9 +397,21 @@ class TAPROOTTest(BitcoinTestFramework):
                 # Fill inputs/witnesses
                 for i in range(inputs):
                     fn = input_utxos[i].spender.sat_function
-                    fn(tx, i, [utxo.output for utxo in input_utxos], i != fail_input)
-                # Submit to mempool to check standardness
+                    [sighash, script] = fn(tx, i, [utxo.output for utxo in input_utxos], i != fail_input)
+                    inputsJSON[i]['sighash'] = sighash.hex() if sighash != None else None
+                    inputsJSON[i]['script'] = script.hex() if script != None else None
+                # Evaluate standardness
                 standard = fail_input == inputs and all(utxo.spender.is_standard for utxo in input_utxos) and tx.nVersion >= 1 and tx.nVersion <= 2
+
+                # Add this transaction to output JSON file
+                case = {
+                    "fail_input": fail_input,
+                    "standard": standard,
+                    "inputs": inputsJSON,
+                    "tx": tx.serialize().hex()}
+                tests.append(case)
+
+                # Submit to mempool to check standardness
                 if standard:
                     self.nodes[0].sendrawtransaction(tx.serialize().hex(), 0)
                     assert(self.nodes[0].getmempoolentry(tx.hash) is not None)
@@ -389,6 +421,8 @@ class TAPROOTTest(BitcoinTestFramework):
                 tx.rehash()
                 msg = ','.join(utxo.spender.comment + ("*" if n == fail_input else "") for n, utxo in enumerate(input_utxos))
                 self.block_submit(self.nodes[0], [tx], msg, witness=True, accept=fail_input == inputs, cb_pubkey=random.choice(host_pubkeys), fees=fee)
+
+        return {"UTXOs": utxosJSON, "tests": tests}
 
     def build_spenders(self):
         VALID_SIGHASHES = [0, 1, 2, 3, 0x81, 0x82, 0x83]
@@ -502,6 +536,7 @@ class TAPROOTTest(BitcoinTestFramework):
             ]
             info = taproot_construct(pub1, scripts)
             info2 = taproot_construct(pub1, scripts2)
+
             # Test that 520 byte stack element inputs are valid, but 521 byte ones are not.
             spender_two_paths(spenders, info, "tapscript/input520limit", standard=False, success={"key": sec2, "hashtype": hashtype, "annex": annex, "script": scripts[0], "suffix": [random_bytes(520)]}, failure={"key": sec2, "hashtype": hashtype, "annex": annex, "script": scripts[0], "suffix": [random_bytes(521)]})
             # Test that 80 byte stack element inputs are valid and standard; 81 bytes ones are valid and nonstandard
@@ -579,16 +614,19 @@ class TAPROOTTest(BitcoinTestFramework):
 
         # The actual tests require wallet support
         if self.is_wallet_compiled():
-
             # Run all tests once with individual inputs
             spenders = self.build_spenders()
-            self.test_spenders(spenders, input_counts=[1])
+            outputJSON = self.test_spenders(spenders, input_counts=[1])
+            with open('taproot_tx_data_single_input.json', 'w') as json_file:
+              json.dump(outputJSON, json_file)
 
             # Run 10 instances of all tests in groups of 2, 3, and 4 inputs.
-            spenders = []
-            for i in range(10):
-                spenders += self.build_spenders()
-            self.test_spenders(spenders, input_counts=[2, 3, 4])
+            # spenders = []
+            # for i in range(10):
+            #     spenders += self.build_spenders()
+            # outputJSON = self.test_spenders(spenders, input_counts=[2,3,4])
+            # with open('taproot_tx_data_multiple_inputs.json', 'w') as json_file:
+            #   json.dump(outputJSON, json_file)
 
 if __name__ == '__main__':
     TAPROOTTest().main()
