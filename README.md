@@ -1,75 +1,87 @@
-Bitcoin Core integration/staging tree
-=====================================
+Taproot test vectors
+====================
 
-https://bitcoincore.org
+This branch is a fork of the WIP Taproot branch maintained by Pieter Wuille at:
 
-What is Bitcoin?
-----------------
+https://github.com/sipa/bitcoin/tree/taproot
 
-Bitcoin is an experimental digital currency that enables instant payments to
-anyone, anywhere in the world. Bitcoin uses peer-to-peer technology to operate
-with no central authority: managing transactions and issuing money are carried
-out collectively by the network. Bitcoin Core is the name of open source
-software which enables the use of this currency.
+Modifications are made to the Taproot functional test:
 
-For more information, as well as an immediately usable, binary version of
-the Bitcoin Core software, see https://bitcoincore.org/en/download/, or read the
-[original whitepaper](https://bitcoincore.org/bitcoin.pdf).
+https://github.com/sipa/bitcoin/blob/taproot/test/functional/feature_taproot.py
 
-License
--------
+This test generates a few hundred random valid (and invalid) Taproot transactions,
+covering the in-development specifications of the following BIPs:
 
-Bitcoin Core is released under the terms of the MIT license. See [COPYING](COPYING) for more
-information or see https://opensource.org/licenses/MIT.
+- https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki
 
-Development Process
--------------------
+- https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
 
-The `master` branch is regularly built and tested, but is not guaranteed to be
-completely stable. [Tags](https://github.com/bitcoin/bitcoin/tags) are created
-regularly to indicate new official, stable release versions of Bitcoin Core.
+- https://github.com/bitcoin/bips/blob/master/bip-0342.mediawiki
 
-The contribution workflow is described in [CONTRIBUTING.md](CONTRIBUTING.md)
-and useful hints for developers can be found in [doc/developer-notes.md](doc/developer-notes.md).
+**NOTE:** At this time,
+[changes have been proposed](https://github.com/bitcoin/bips/pull/893)
+to the Schnorr signature specification, but those changes have not yet been
+approved or merged into the reference implementation this testing branch
+is based on.
 
-Testing
--------
+The test is executed entirely in memory and new transactions are generated
+randomly on each run. In order to test alternative implementations of the new
+Taproot spec (in my case, for [bcoin](https://github.com/pinheadmz/bcoin/tree/taproot1))
+importable test-vectors are especially useful.
 
-Testing and code review is the bottleneck for development; we get more pull
-requests than we can review and test on short notice. Please be patient and help out by testing
-other people's pull requests, and remember this is a security-critical project where any mistake might cost people
-lots of money.
+In this branch, a JSON file is exported from the `feature_taproot.py` test:
 
-### Automated Testing
+https://github.com/pinheadmz/bitcoin/blob/taproottest1/taproot_tx_data_single_input.json
 
-Developers are strongly encouraged to write [unit tests](src/test/README.md) for new code, and to
-submit new unit tests for old code. Unit tests can be compiled and run
-(assuming they weren't disabled in configure) with: `make check`. Further details on running
-and extending unit tests can be found in [/src/test/README.md](/src/test/README.md).
+This file can be used by other developers interested in programming Taproot
+transactions. At the top level, the JSON object has two sub-objects: `UTXOs` and
+`tests`. The `UTXOs` object itself contains many sub-objects, keyed by a serialized
+`COutPoint`, with `value` and `scriptPubKey` as values. These are the coins spent
+by the transactions in `tests`. The `tests` object contains several properties
+a developer might test for (for example, correctly identifying the annex from a
+witness or -- more critically -- executing the complex new
+[sigHash algorithm](https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki#common-signature-message)).
 
-There are also [regression and integration tests](/test), written
-in Python, that are run automatically on the build server.
-These tests can be run (if the [test dependencies](/test) are installed) with: `test/functional/test_runner.py`
+Examples of the layout is as follows:
 
-The Travis CI system makes sure that every pull request is built for Windows, Linux, and macOS, and that unit/sanity tests are run automatically.
+```
+{
+  "UTXOs": {
+    "bdd5226970c6078b7f0ad9935ca4beebba8c79854a93e2ffbbcf4e749b2b736e04000000": {
+      "value": 341801981,
+      "scriptPubKey": "512001469a59baff4739c7cf17ab5e2b1129b3eb017e34549cd23770a138b999f067"
+    },
+    ...
+  },
+  "tests": [
+    {
+      "fail_input": 0,
+      "standard": false,
+      "inputs": [
+        {
+          "comment": "sighash/p2pk#s0",
+          "annex": null,
+          "sighash": "f60a9d8509e2e3cb548482438bc389c30e53a206dcc08c099948d3bf24406cf7",
+          "script": "04ffffffff204b3361de99428a88ddcde9d5790fa56077d42212eeedaa3386152fa19cedc313ba04feffffff87"
+        }
+      ],
+      "tx": "010000000001013770014cf7e4e7998553faad62cd0928733781f16e004ae30d03e18b5c822970030000000057b986d50454816614000000001976a914a7cf74b43b40d92425e5f09c1a91336434c0ebbd88ac580200000000000017a914a83788cdcfa35959ee6475b30f311d7261d9153787580200000000000017a914a83788cdcfa35959ee6475b30f311d7261d915378758020000000000001976a914f50e9a0e0cb7a996c7830d7cbb1ef4f11e723ade88ac03413a0deee4513f52dc52579d7ba8009b9e32332c1b78b3c5b5679edc486b22cde67ed89df3a4eb63083683678950f410dfae2579ccdc67045b42ce310b88786aa8832d04ffffffff204b3361de99428a88ddcde9d5790fa56077d42212eeedaa3386152fa19cedc313ba04feffffff8721c067fe9c0ca22f9379604fa085b0d987e172290f530b0c6faa9caa9fcc25e25bf277c66c48"
+    },
+    ...
+  ]
+}
+```
 
-### Manual Quality Assurance (QA) Testing
+### Notes
 
-Changes should be tested by somebody other than the developer who wrote the
-code. This is especially important for large or high-risk changes. It is useful
-to add a test plan to the pull request description if testing the changes is
-not straightforward.
+- The included JSON file only saved the single-input tests, but the functional test
+also generated multi-input transactions. You can generate your own test vectors by
+uncommenting the lines at the end of `feature_taproot.py`
 
-Translations
-------------
+- None of these tests execute a multisig with `OP_CHECKSIGADD`. This makes things
+much simpler (one signature & sighash per test)
 
-Changes to translations as well as new translations can be submitted to
-[Bitcoin Core's Transifex page](https://www.transifex.com/bitcoin/bitcoin/).
+- Everything is a work-in-progress until code is merged into Bitcoin Core. The
+BIPs themselves are still being updated.
 
-Translations are periodically pulled from Transifex and merged into the git repository. See the
-[translation process](doc/translation_process.md) for details on how this works.
-
-**Important**: We do not accept translation changes as GitHub pull requests because the next
-pull from Transifex would automatically overwrite them again.
-
-Translators should also subscribe to the [mailing list](https://groups.google.com/forum/#!forum/bitcoin-translators).
+Enjoy!
