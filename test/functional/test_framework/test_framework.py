@@ -369,7 +369,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         Should only be called once after the nodes have been specified in
         set_test_params()."""
         if self.bind_to_localhost_only:
-            extra_confs = [["bind=127.0.0.1"]] * num_nodes
+            extra_confs = [["host: 127.0.0.1"]] * num_nodes
         else:
             extra_confs = [[]] * num_nodes
         if extra_args is None:
@@ -525,8 +525,8 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                     CACHE_NODE_ID,
                     cache_node_dir,
                     chain=self.chain,
-                    extra_conf=["bind=127.0.0.1"],
-                    extra_args=['-disablewallet'],
+                    extra_conf=["host: 127.0.0.1"],
+                    extra_args=['--no-wallet'],
                     rpchost=None,
                     timewait=self.rpc_timeout,
                     bitcoind=self.options.bitcoind,
@@ -569,7 +569,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             self.log.debug("Copy cache directory {} to node {}".format(cache_node_dir, i))
             to_dir = get_datadir_path(self.options.tmpdir, i)
             shutil.copytree(cache_node_dir, to_dir)
-            initialize_datadir(self.options.tmpdir, i, self.chain)  # Overwrite port/rpcport in bitcoin.conf
+            initialize_datadir(self.options.tmpdir, i, self.chain)  # Overwrite port/rpcport in bcoin.conf
 
     def _initialize_chain_clean(self):
         """Initialize empty blockchain for use by the test.
