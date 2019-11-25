@@ -419,7 +419,8 @@ def sync_mempools(rpc_connections, *, wait=1, timeout=60, flush_scheduler=True):
         if pool.count(pool[0]) == len(rpc_connections):
             if flush_scheduler:
                 for r in rpc_connections:
-                    r.syncwithvalidationinterfacequeue()
+                    # r.syncwithvalidationinterfacequeue()
+                    print('skipping syncwithvalidationinterfacequeue')
             return
         time.sleep(wait)
     raise AssertionError("Mempool sync timed out:{}".format("".join("\n  {!r}".format(m) for m in pool)))
