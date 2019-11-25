@@ -131,7 +131,7 @@ class AuthServiceProxy():
             raise ValueError('Cannot handle both named and positional arguments')
         return {'version': '1.1',
                 'method': self._service_name,
-                'params': args or argsn,
+                'params': [x for x in args] or [x for x in argsn.values()],
                 'id': AuthServiceProxy.__id_count}
 
     def __call__(self, *args, **argsn):
