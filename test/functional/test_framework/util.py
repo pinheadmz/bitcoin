@@ -293,9 +293,6 @@ def rpc_url(datadir, i, chain, rpchost):
 ################
 
 def initialize_datadir(dirname, n, chain):
-    datadir = get_datadir_path(dirname, n)
-    if not os.path.isdir(datadir):
-        os.makedirs(datadir)
     # Translate chain name to config name
     if chain == 'testnet3':
         chain_name_conf_arg = 'testnet'
@@ -303,6 +300,14 @@ def initialize_datadir(dirname, n, chain):
     else:
         chain_name_conf_arg = chain
         chain_name_conf_section = chain
+
+    datadir = get_datadir_path(dirname, n)
+    if not os.path.isdir(datadir):
+        os.makedirs(datadir)
+    walletdatadir = os.path.join(datadir, chain_name_conf_arg)
+    if not os.path.isdir(walletdatadir):
+        os.makedirs(walletdatadir)
+
     with open(os.path.join(datadir, "bcoin.conf"), 'w', encoding='utf8') as f:
         f.write("network: {}".format(chain_name_conf_arg) + "\n")
         # f.write("[{}]\n".format(chain_name_conf_section))
@@ -323,6 +328,11 @@ def initialize_datadir(dirname, n, chain):
         # f.write("shrinkdebugfile=0\n")
         os.makedirs(os.path.join(datadir, 'stderr'), exist_ok=True)
         os.makedirs(os.path.join(datadir, 'stdout'), exist_ok=True)
+    with open(os.path.join(walletdatadir, "wallet.conf"), 'w', encoding='utf8') as f:
+        f.write("network: {}".format(chain_name_conf_arg) + "\n")
+        f.write("http-port: " + str(rpc_port(n) + 1000) + "\n")
+        f.write("prefix: " + datadir + "\n")
+
     return datadir
 
 def get_datadir_path(dirname, n):
