@@ -165,6 +165,8 @@ class TestNode():
         """Start the node."""
         if extra_args is None:
             extra_args = self.extra_args
+        else:
+            extra_args =  ['-' + arg for arg in extra_args]
 
         # Add a new stdout and stderr file each time bitcoind is started
         if stderr is None:
