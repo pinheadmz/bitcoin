@@ -98,10 +98,63 @@ class AuthServiceProxy():
                    'User-Agent': USER_AGENT,
                    'Authorization': self.__auth_header,
                    'Content-type': 'application/json'}
-        if os.name == 'nt':
-            # Windows somehow does not like to re-use connections
-            # TODO: Find out why the connection would disconnect occasionally and make it reusable on Windows
+
+        if self._service_name in [
+            'fundrawtransaction',
+            'resendwallettransactions',
+            'abandontransaction',
+            'addmultisigaddress',
+            'addwitnessaddress',
+            'backupwallet',
+            'dumpprivkey',
+            'dumpwallet',
+            'encryptwallet',
+            'getaddressinfo',
+            'getaccountaddress',
+            'getaccount',
+            'getaddressesbyaccount',
+            'getbalance',
+            'getnewaddress',
+            'getrawchangeaddress',
+            'getreceivedbyaccount',
+            'getreceivedbyaddress',
+            'gettransaction',
+            'getunconfirmedbalance',
+            'getwalletinfo',
+            'importprivkey',
+            'importwallet',
+            'importaddress',
+            'importprunedfunds',
+            'importpubkey',
+            'keypoolrefill',
+            'listaccounts',
+            'listaddressgroupings',
+            'listlockunspent',
+            'listreceivedbyaccount',
+            'listreceivedbyaddress',
+            'listsinceblock',
+            'listtransactions',
+            'listunspent',
+            'lockunspent',
+            'move',
+            'sendfrom',
+            'sendmany',
+            'sendtoaddress',
+            'setaccount',
+            'settxfee',
+            'signmessage',
+            'walletlock',
+            'walletpassphrasechange',
+            'walletpassphrase',
+            'removeprunedfunds',
+            'selectwallet',
+            'getmemoryinfo',
+            'setloglevel'
+        ]:
+            self._set_conn(custom_port=self.__url.port + 1000)
+        else:
             self._set_conn()
+
         try:
             self.__conn.request(method, path, postdata, headers)
             return self._get_response()
@@ -190,8 +243,8 @@ class AuthServiceProxy():
     def __truediv__(self, relative_uri):
         return AuthServiceProxy("{}/{}".format(self.__service_url, relative_uri), self._service_name, connection=self.__conn)
 
-    def _set_conn(self, connection=None):
-        port = 80 if self.__url.port is None else self.__url.port
+    def _set_conn(self, connection=None, custom_port=None):
+        port = self.__url.port if custom_port is None else custom_port
         if connection:
             self.__conn = connection
             self.timeout = connection.timeout
