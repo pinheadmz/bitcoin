@@ -149,7 +149,8 @@ class AuthServiceProxy():
             'removeprunedfunds',
             'selectwallet',
             'getmemoryinfo',
-            'setloglevel'
+            'setloglevel',
+            'signrawtransactionwithwallet'
         ]:
             self._set_conn(custom_port=self.__url.port + 1000)
         else:
