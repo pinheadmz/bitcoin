@@ -200,6 +200,7 @@ class BIP68Test(BitcoinTestFramework):
             else:
                 # This raw transaction should be accepted
                 self.nodes[0].sendrawtransaction(rawtx)
+                time.sleep(0.1) # give bcoin a chance to mark coins as spent
                 utxos = self.nodes[0].listunspent()
 
     # Test that sequence locks on unconfirmed inputs must have nSequence
