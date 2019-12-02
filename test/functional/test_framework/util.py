@@ -375,7 +375,7 @@ def delete_cookie_file(datadir, chain):
 
 def softfork_active(node, key):
     """Return whether a softfork is active."""
-    return node.getblockchaininfo()['softforks'][key]['active']
+    return node.getblockchaininfo()['bip9_softforks'][key]['status'] == "active"
 
 def set_node_times(nodes, t):
     for node in nodes:
