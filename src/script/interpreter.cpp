@@ -1864,9 +1864,9 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         assert(false); // Unreachable code
     }
 
-    if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM) {
-        return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM);
-    }
+    // if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM) {
+    //     return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM);
+    // }
 
     // Higher version witness scripts return true for future softfork compatibility
     return set_success(serror);

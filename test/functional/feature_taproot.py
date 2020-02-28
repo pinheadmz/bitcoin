@@ -578,7 +578,7 @@ class TAPROOTTest(BitcoinTestFramework):
             spender_alwaysvalid(spenders, info, "alwaysvalid/success#if", script=scripts[1], annex=annex)
             spender_alwaysvalid(spenders, info, "alwaysvalid/success#verif", script=scripts[2], annex=annex)
             spender_alwaysvalid(spenders, info, "alwaysvalid/unknownversion#return", script=scripts[3], annex=annex)
-            spender_alwaysvalid_p2sh(spenders, info, "alwaysvalid/success/p2sh", standard=False, script=scripts[0])
+            spender_alwaysvalid_p2sh(spenders, info, "alwaysvalid/success/p2sh", standard=True, script=scripts[0])
             if (info[2][scripts[4][1]][0] != ANNEX_TAG):
                 # Annex is mandatory for control block with leaf version 0x50
                 spender_alwaysvalid(spenders, info, "alwaysvalid/unknownversion#fe", script=scripts[4], annex=annex)
