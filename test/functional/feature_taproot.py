@@ -410,7 +410,7 @@ def spend(tx, idx, utxos, **kwargs):
     scriptsig_list = flatten(get(ctx, "scriptsig"))
     scriptsig = CScript(b"".join(bytes(to_script(elem)) for elem in scriptsig_list))
     witness_stack = flatten(get(ctx, "witness"))
-    return (scriptsig, witness_stack)
+    return (scriptsig, witness_stack, get(ctx, "annex"), get(ctx, "sighash"))
 
 
 # === Spender objects ===
@@ -1323,6 +1323,8 @@ class TaprootTest(BitcoinTestFramework):
         random.shuffle(mismatching_utxos)
         assert done == len(normal_utxos) + len(mismatching_utxos)
 
+        jsonAllTXs = []
+
         left = done
         while left:
             # Construct CTransaction with random nVersion, nLocktime
@@ -1400,9 +1402,32 @@ class TaprootTest(BitcoinTestFramework):
                 success = fn(tx, i, [utxo.output for utxo in input_utxos], True)
                 if not input_utxos[i].spender.no_fail:
                     fail = fn(tx, i, [utxo.output for utxo in input_utxos], False)
-                input_data.append((fail, success))
+                comment = input_utxos[i].spender.comment
+                input_data.append((fail, success, comment))
                 if self.options.dump_tests:
                     dump_json_test(tx, input_utxos, i, success, fail)
+
+            jsonTX = {}
+            jsonTX["tx"] = tx.serialize().hex()
+            jsonTX["inputs"] = []
+
+            for i in range(len(input_data)):
+                input = input_data[i]
+                obj = {}
+                if input[0] != None:
+                    obj["fail"] =    {"scriptSig": input[0][0].hex(), "witness": [x.hex() for x in input[0][1]], "annex": input[0][2].hex() if input[0][2] is not None else None, "sighash": input[0][3].hex()}
+                else:
+                    obj["fail"] = None
+                if input[1] != None:    
+                    obj["success"] = {"scriptSig": input[1][0].hex(), "witness": [x.hex() for x in input[1][1]], "annex": input[1][2].hex() if input[1][2] is not None else None, "sighash": input[1][3].hex()}
+                else:
+                    obj["success"] = None
+                obj["comment"] = input[2]
+                obj["standard"] = input_utxos[i].spender.is_standard
+                jsonTX["inputs"].append(obj)
+            
+            jsonTX["prevouts"] = [x.output.serialize().hex() for x in input_utxos]
+            jsonAllTXs.append(jsonTX)
 
             # Sign each input incorrectly once on each complete signing pass, except the very last.
             for fail_input in list(range(len(input_utxos))) + [None]:
@@ -1429,6 +1454,9 @@ class TaprootTest(BitcoinTestFramework):
 
             if (len(spenders) - left) // 200 > (len(spenders) - left - len(input_utxos)) // 200:
                 self.log.info("  - %i tests done" % (len(spenders) - left))
+
+        with open('taproot_test_vectors.json', 'w') as json_file:
+            json.dump(jsonAllTXs, json_file)
 
         assert left == 0
         assert len(normal_utxos) == 0
@@ -1466,12 +1494,12 @@ class TaprootTest(BitcoinTestFramework):
         self.sync_blocks()
 
         # Pre-taproot activation tests.
-        self.log.info("Pre-activation tests...")
+        # self.log.info("Pre-activation tests...")
         # Run each test twice; once in isolation, and once combined with others. Testing in isolation
         # means that the standardness is verified in every test (as combined transactions are only standard
         # when all their inputs are standard).
-        self.test_spenders(self.nodes[0], spenders_taproot_inactive(), input_counts=[1])
-        self.test_spenders(self.nodes[0], spenders_taproot_inactive(), input_counts=[2, 3])
+        # self.test_spenders(self.nodes[0], spenders_taproot_inactive(), input_counts=[1])
+        # self.test_spenders(self.nodes[0], spenders_taproot_inactive(), input_counts=[2, 3])
 
 
 if __name__ == '__main__':
