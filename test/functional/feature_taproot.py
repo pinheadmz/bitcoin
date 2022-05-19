@@ -413,7 +413,7 @@ def spend(tx, idx, utxos, **kwargs):
     scriptsig_list = flatten(get(ctx, "scriptsig"))
     scriptsig = CScript(b"".join(bytes(to_script(elem)) for elem in scriptsig_list))
     witness_stack = flatten(get(ctx, "witness"))
-    return (scriptsig, witness_stack, get(ctx, "annex"), get(ctx, "sighash"), script)
+    return (scriptsig, witness_stack, get(ctx, "annex"), get(ctx, "sighash"), script, get(ctx, "mode"), get(ctx, "codeseppos"))
 
 
 # === Spender objects ===
@@ -1418,18 +1418,17 @@ class TaprootTest(BitcoinTestFramework):
                 input = input_data[i]
                 obj = {}
                 if input[0] != None:
-                    obj["fail"] =    {"scriptSig": input[0][0].hex(), "witness": [x.hex() for x in input[0][1]], "annex": input[0][2].hex() if input[0][2] is not None else None, "sighash": input[0][3].hex(), "script": input[0][4]}
+                    obj["fail"] =    {"scriptSig": input[0][0].hex(), "witness": [x.hex() for x in input[0][1]], "annex": input[0][2].hex() if input[0][2] is not None else None, "sighash": input[0][3].hex(), "script": input[0][4], "mode": input[0][5], "codeseppos": input[0][6]}
                 else:
                     obj["fail"] = None
                 if input[1] != None:    
-                    obj["success"] = {"scriptSig": input[1][0].hex(), "witness": [x.hex() for x in input[1][1]], "annex": input[1][2].hex() if input[1][2] is not None else None, "sighash": input[1][3].hex(), "script": input[1][4]}
+                    obj["success"] = {"scriptSig": input[1][0].hex(), "witness": [x.hex() for x in input[1][1]], "annex": input[1][2].hex() if input[1][2] is not None else None, "sighash": input[1][3].hex(), "script": input[1][4], "mode": input[1][5], "codeseppos": input[1][6]}
                 else:
                     obj["success"] = None
                 obj["comment"] = input[2]
                 obj["standard"] = input_utxos[i].spender.is_standard
                 jsonTX["inputs"].append(obj)
             jsonTX["prevouts"] = [x.output.serialize().hex() for x in input_utxos]
-
             jsonAllTXs.append(jsonTX)
 
             # Sign each input incorrectly once on each complete signing pass, except the very last.
