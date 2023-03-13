@@ -392,6 +392,29 @@ std::vector<WalletDestination> LegacyScriptPubKeyMan::MarkUnusedAddresses(const 
     return result;
 }
 
+bool LegacyScriptPubKeyMan::IsKeyActive(const CScript& script)
+{
+    LOCK(cs_KeyStore);
+
+    // Not in the keystore at all
+    if (!IsMine(script))
+        return false;
+
+    for (const auto& key_id : GetAffectedKeys(script, *this)) {
+        auto it = mapKeyMetadata.find(key_id);
+        if (it == mapKeyMetadata.end()) {
+            // This key must be really old
+            return false;
+        }
+        const CKeyMetadata& meta = it->second;
+        if (m_hd_chain.seed_id == meta.hd_seed_id)
+            return true;
+    }
+
+    // Imported or dumped for a new keypool
+    return false;
+}
+
 void LegacyScriptPubKeyMan::UpgradeKeyMetadata()
 {
     LOCK(cs_KeyStore);
@@ -2203,6 +2226,11 @@ std::vector<WalletDestination> DescriptorScriptPubKeyMan::MarkUnusedAddresses(co
     }
 
     return result;
+}
+
+bool DescriptorScriptPubKeyMan::IsKeyActive(const CScript& script)
+{
+    return IsMine(script);
 }
 
 void DescriptorScriptPubKeyMan::AddDescriptorKey(const CKey& key, const CPubKey &pubkey)
