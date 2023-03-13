@@ -506,7 +506,8 @@ RPCHelpMan getaddressinfo()
                         {RPCResult::Type::STR, "desc", /*optional=*/true, "A descriptor for spending coins sent to this address (only when solvable)."},
                         {RPCResult::Type::STR, "parent_desc", /*optional=*/true, "The descriptor used to derive this address if this is a descriptor wallet"},
                         {RPCResult::Type::BOOL, "isscript", "If the key is a script."},
-                        {RPCResult::Type::BOOL, "ischange", "If the address was used for change output."},
+                        {RPCResult::Type::BOOL, "ischange", "If the address was or will be used for change output."},
+                        {RPCResult::Type::BOOL, "isactive", "If the key is in the active keypool."},
                         {RPCResult::Type::BOOL, "iswitness", "If the address is a witness address."},
                         {RPCResult::Type::NUM, "witness_version", /*optional=*/true, "The version number of the witness program."},
                         {RPCResult::Type::STR_HEX, "witness_program", /*optional=*/true, "The hex value of the witness program."},
@@ -602,6 +603,7 @@ RPCHelpMan getaddressinfo()
     ret.pushKVs(detail);
 
     ret.pushKV("ischange", ScriptIsChange(*pwallet, scriptPubKey));
+    ret.pushKV("isactive", pwallet->IsDestinationActive(dest));
 
     if (spk_man) {
         if (const std::unique_ptr<CKeyMetadata> meta = spk_man->GetMetadata(dest)) {

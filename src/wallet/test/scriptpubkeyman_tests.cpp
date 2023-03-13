@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <key.h>
+
 #include <script/standard.h>
 #include <test/util/setup_common.h>
 #include <wallet/scriptpubkeyman.h>
@@ -182,6 +183,15 @@ BOOST_AUTO_TEST_CASE(Descriptor_IsKeyActive)
     for (const CScript& script : scripts4) {
         BOOST_CHECK(spkm->IsKeyActive(script));
     }
+
+    // ...but at the wallet level all the keys from that SPKM are deactivated
+    int num_script_keys_not_found = 0;
+    for (const CScript& script : scripts4) {
+        WitnessV0ScriptHash scripthash(script);
+        if (!wallet.IsDestinationActive(scripthash))
+            num_script_keys_not_found++;
+    }
+    BOOST_CHECK(num_script_keys_not_found == 16);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
