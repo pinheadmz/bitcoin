@@ -95,8 +95,8 @@ class BIP68_112_113Test(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
         self.setup_clean_chain = True
+        self.noban_tx_relay = True
         self.extra_args = [[
-            '-whitelist=noban@127.0.0.1',
             f'-testactivationheight=csv@{CSV_ACTIVATION_HEIGHT}',
             '-par=1',  # Use only one script thread to get the exact reject reason for testing
         ]]
