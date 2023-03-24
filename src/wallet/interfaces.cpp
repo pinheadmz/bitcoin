@@ -211,7 +211,7 @@ public:
         std::vector<WalletAddress> result;
         m_wallet->ForEachAddrBookEntry([&](const CTxDestination& dest, const std::string& label, const std::string& purpose, bool is_change) EXCLUSIVE_LOCKS_REQUIRED(m_wallet->cs_wallet) {
             if (is_change) return;
-            result.emplace_back(dest, m_wallet->IsMine(dest), label, purpose);
+            result.emplace_back(dest, m_wallet->IsMine(dest), label, purpose, m_wallet->IsDestinationActive(dest));
         });
         return result;
     }

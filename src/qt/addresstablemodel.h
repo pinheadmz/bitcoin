@@ -29,8 +29,9 @@ public:
     ~AddressTableModel();
 
     enum ColumnIndex {
-        Label = 0,   /**< User specified label */
-        Address = 1  /**< Bitcoin address */
+        Active = 0,  /**< If the key is dervived from an active seed / descriptor */
+        Label = 1,   /**< User specified label */
+        Address = 2  /**< Bitcoin address */
     };
 
     enum RoleIndex {

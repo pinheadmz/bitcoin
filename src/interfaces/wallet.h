@@ -354,9 +354,10 @@ struct WalletAddress
     wallet::isminetype is_mine;
     std::string name;
     std::string purpose;
+    bool is_active{false};
 
-    WalletAddress(CTxDestination dest, wallet::isminetype is_mine, std::string name, std::string purpose)
-        : dest(std::move(dest)), is_mine(is_mine), name(std::move(name)), purpose(std::move(purpose))
+    WalletAddress(CTxDestination dest, wallet::isminetype is_mine, std::string name, std::string purpose, bool is_active)
+        : dest(std::move(dest)), is_mine(is_mine), name(std::move(name)), purpose(std::move(purpose)), is_active(is_active)
     {
     }
 };
