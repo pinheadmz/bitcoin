@@ -42,7 +42,7 @@ void ReceiveRequestDialog::setModel(WalletModel *_model)
     update();
 }
 
-void ReceiveRequestDialog::setInfo(const SendCoinsRecipient &_info)
+void ReceiveRequestDialog::setInfo(const SendCoinsRecipient &_info, bool active)
 {
     this->info = _info;
     setWindowTitle(tr("Request payment to %1").arg(info.label.isEmpty() ? info.address : info.label));
@@ -88,6 +88,8 @@ void ReceiveRequestDialog::setInfo(const SendCoinsRecipient &_info)
         ui->wallet_tag->hide();
         ui->wallet_content->hide();
     }
+
+    ui->active_content->setText(active ? tr("Yes") : tr("No"));
 
     ui->btnVerify->setVisible(model->wallet().hasExternalSigner());
 

@@ -438,8 +438,11 @@ BOOST_AUTO_TEST_CASE(LoadReceiveRequests)
 
     auto values = m_wallet.GetAddressReceiveRequests();
     BOOST_CHECK_EQUAL(values.size(), 2U);
-    BOOST_CHECK_EQUAL(values[0], "val_rr0");
-    BOOST_CHECK_EQUAL(values[1], "val_rr1");
+    // Key is marked as not active since it was effectively imported, not derived
+    BOOST_CHECK(!(values[0].first));
+    BOOST_CHECK(!(values[1].first));
+    BOOST_CHECK_EQUAL(values[0].second, "val_rr0");
+    BOOST_CHECK_EQUAL(values[1].second, "val_rr1");
 }
 
 // Test some watch-only LegacyScriptPubKeyMan methods by the procedure of loading (LoadWatchOnly),

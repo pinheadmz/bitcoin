@@ -24,7 +24,7 @@ public:
     ~ReceiveRequestDialog();
 
     void setModel(WalletModel *model);
-    void setInfo(const SendCoinsRecipient &info);
+    void setInfo(const SendCoinsRecipient &info, bool active);
 
 private Q_SLOTS:
     void on_btnCopyURI_clicked();

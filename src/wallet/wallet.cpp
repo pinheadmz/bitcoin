@@ -2866,14 +2866,15 @@ bool CWallet::IsAddressUsed(const CTxDestination& dest) const
     return false;
 }
 
-std::vector<std::string> CWallet::GetAddressReceiveRequests() const
+std::vector<std::pair<bool, std::string>> CWallet::GetAddressReceiveRequests() const
 {
     const std::string prefix{"rr"};
-    std::vector<std::string> values;
+    std::vector<std::pair<bool, std::string>> values;
     for (const auto& address : m_address_book) {
         for (const auto& data : address.second.destdata) {
+            bool active{IsDestinationActive(address.first)};
             if (!data.first.compare(0, prefix.size(), prefix)) {
-                values.emplace_back(data.second);
+                values.emplace_back(std::make_pair(active, data.second));
             }
         }
     }

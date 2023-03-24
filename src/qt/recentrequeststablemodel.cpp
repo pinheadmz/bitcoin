@@ -7,6 +7,7 @@
 #include <qt/bitcoinunits.h>
 #include <qt/guiutil.h>
 #include <qt/optionsmodel.h>
+#include <qt/platformstyle.h>
 #include <qt/walletmodel.h>
 
 #include <clientversion.h>
@@ -17,19 +18,20 @@
 
 #include <utility>
 
+#include <QIcon>
 #include <QLatin1Char>
 #include <QLatin1String>
 
-RecentRequestsTableModel::RecentRequestsTableModel(WalletModel *parent) :
+RecentRequestsTableModel::RecentRequestsTableModel(const PlatformStyle *platformStyle, WalletModel *parent) :
     QAbstractTableModel(parent), walletModel(parent)
 {
     // Load entries from wallet
-    for (const std::string& request : parent->wallet().getAddressReceiveRequests()) {
+    for (const std::pair<bool, std::string>& request : parent->wallet().getAddressReceiveRequests()) {
         addNewRequest(request);
     }
 
     /* These columns must match the indices in the ColumnIndex enumeration */
-    columns << tr("Date") << tr("Label") << tr("Message") << getAmountTitle();
+    columns << tr("Active") << tr("Date") << tr("Label") << tr("Message") << getAmountTitle();
 
     connect(walletModel->getOptionsModel(), &OptionsModel::displayUnitChanged, this, &RecentRequestsTableModel::updateDisplayUnit);
 }
@@ -57,11 +59,13 @@ QVariant RecentRequestsTableModel::data(const QModelIndex &index, int role) cons
     if(!index.isValid() || index.row() >= list.length())
         return QVariant();
 
+    const RecentRequestEntry *rec = &list[index.row()];
     if(role == Qt::DisplayRole || role == Qt::EditRole)
     {
-        const RecentRequestEntry *rec = &list[index.row()];
         switch(index.column())
         {
+        case Active:
+            return {};
         case Date:
             return GUIUtil::dateTimeStr(rec->date);
         case Label:
@@ -95,6 +99,10 @@ QVariant RecentRequestsTableModel::data(const QModelIndex &index, int role) cons
     {
         if (index.column() == Amount)
             return (int)(Qt::AlignRight|Qt::AlignVCenter);
+    }
+    else if (role == Qt::DecorationRole) {
+        if (index.column() == Active)
+            return rec->m_is_active ? platformStyle->TextColorIcon(QIcon(":/icons/synced")) : platformStyle->TextColorIcon(QIcon(":/icons/warning"));
     }
     return QVariant();
 }
@@ -181,13 +189,17 @@ void RecentRequestsTableModel::addNewRequest(const SendCoinsRecipient &recipient
     if (!walletModel->wallet().setAddressReceiveRequest(DecodeDestination(recipient.address.toStdString()), ToString(newEntry.id), ss.str()))
         return;
 
+    // If we are using the GUI to get a new receive address,
+    // the key must be active (derived from active seed or descriptor)
+    newEntry.m_is_active = true;
+
     addNewRequest(newEntry);
 }
 
 // called from ctor when loading from wallet
-void RecentRequestsTableModel::addNewRequest(const std::string &recipient)
+void RecentRequestsTableModel::addNewRequest(const std::pair<bool, std::string> &recipient)
 {
-    std::vector<uint8_t> data(recipient.begin(), recipient.end());
+    std::vector<uint8_t> data(recipient.second.begin(), recipient.second.end());
     DataStream ss{data};
 
     RecentRequestEntry entry;
@@ -198,6 +210,8 @@ void RecentRequestsTableModel::addNewRequest(const std::string &recipient)
 
     if (entry.id > nReceiveRequestsMaxId)
         nReceiveRequestsMaxId = entry.id;
+
+    entry.m_is_active = recipient.first;
 
     addNewRequest(entry);
 }

@@ -117,8 +117,8 @@ public:
     //! Get wallet address list.
     virtual std::vector<WalletAddress> getAddresses() const = 0;
 
-    //! Get receive requests.
-    virtual std::vector<std::string> getAddressReceiveRequests() = 0;
+    //! Get receive requests. Bool indicating key is active, string containing serialized destination data
+    virtual std::vector<std::pair<bool, std::string>> getAddressReceiveRequests() = 0;
 
     //! Save or remove receive request.
     virtual bool setAddressReceiveRequest(const CTxDestination& dest, const std::string& id, const std::string& value) = 0;

@@ -215,7 +215,7 @@ public:
         });
         return result;
     }
-    std::vector<std::string> getAddressReceiveRequests() override {
+    std::vector<std::pair<bool, std::string>> getAddressReceiveRequests() override {
         LOCK(m_wallet->cs_wallet);
         return m_wallet->GetAddressReceiveRequests();
     }

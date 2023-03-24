@@ -5,6 +5,7 @@
 #ifndef BITCOIN_QT_RECENTREQUESTSTABLEMODEL_H
 #define BITCOIN_QT_RECENTREQUESTSTABLEMODEL_H
 
+#include <qt/platformstyle.h>
 #include <qt/sendcoinsrecipient.h>
 
 #include <string>
@@ -25,6 +26,8 @@ public:
     int64_t id{0};
     QDateTime date;
     SendCoinsRecipient recipient;
+
+    bool m_is_active{false}; // memory only
 
     SERIALIZE_METHODS(RecentRequestEntry, obj) {
         unsigned int date_timet;
@@ -54,14 +57,15 @@ class RecentRequestsTableModel: public QAbstractTableModel
     Q_OBJECT
 
 public:
-    explicit RecentRequestsTableModel(WalletModel *parent);
+    explicit RecentRequestsTableModel(const PlatformStyle *platformStyle, WalletModel *parent);
     ~RecentRequestsTableModel();
 
     enum ColumnIndex {
-        Date = 0,
-        Label = 1,
-        Message = 2,
-        Amount = 3,
+        Active = 0,
+        Date = 1,
+        Label = 2,
+        Message = 3,
+        Amount = 4,
         NUMBER_OF_COLUMNS
     };
 
@@ -80,7 +84,7 @@ public:
 
     const RecentRequestEntry &entry(int row) const { return list[row]; }
     void addNewRequest(const SendCoinsRecipient &recipient);
-    void addNewRequest(const std::string &recipient);
+    void addNewRequest(const std::pair<bool, std::string> &recipient);
     void addNewRequest(RecentRequestEntry &recipient);
 
 public Q_SLOTS:
@@ -91,6 +95,7 @@ private:
     QStringList columns;
     QList<RecentRequestEntry> list;
     int64_t nReceiveRequestsMaxId{0};
+    const PlatformStyle *platformStyle;
 
     /** Updates the column title to "Amount (DisplayUnit)" and emits headerDataChanged() signal for table headers to react. */
     void updateAmountColumnTitle();
