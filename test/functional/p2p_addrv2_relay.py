@@ -20,19 +20,29 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 
 I2P_ADDR = "c4gfnttsuwqomiygupdqqqyy5y5emnk5c73hrfvatri67prd7vyq.b32.i2p"
+ONION_ADDR = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
 
 ADDRS = []
+msg_size = 1 # vector length byte
 for i in range(10):
     addr = CAddress()
     addr.time = int(time.time()) + i
+    addr.port = 8333 + i
     addr.nServices = P2P_SERVICES
-    # Add one I2P address at an arbitrary position.
+    # Add one I2P and one onion V3 address at an arbitrary position.
     if i == 5:
         addr.net = addr.NET_I2P
         addr.ip = I2P_ADDR
+        addr.port = 0
+        msg_size += addr.ADDRV2_ADDRESS_LENGTH[addr.NET_I2P]
+    elif i == 8:
+        addr.net = addr.NET_TORV3
+        addr.ip = ONION_ADDR
+        msg_size += addr.ADDRV2_ADDRESS_LENGTH[addr.NET_TORV3]
     else:
         addr.ip = f"123.123.123.{i % 256}"
-    addr.port = 8333 + i
+        msg_size += addr.ADDRV2_ADDRESS_LENGTH[addr.NET_IPV4]
+    msg_size += 4 + 1 + 1 + 2 + 1 # time, services, networkID, port, address length byte
     ADDRS.append(addr)
 
 
@@ -72,8 +82,8 @@ class AddrTest(BitcoinTestFramework):
         addr_receiver = self.nodes[0].add_p2p_connection(AddrReceiver())
         msg.addrs = ADDRS
         with self.nodes[0].assert_debug_log([
-                'received: addrv2 (159 bytes) peer=0',
-                'sending addrv2 (159 bytes) peer=1',
+                f'received: addrv2 ({msg_size} bytes) peer=0',
+                f'sending addrv2 ({msg_size} bytes) peer=1',
         ]):
             addr_source.send_and_ping(msg)
             self.nodes[0].setmocktime(int(time.time()) + 30 * 60)
