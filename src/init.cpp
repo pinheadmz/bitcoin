@@ -1278,7 +1278,14 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             std::string host_out;
             uint16_t port_out{0};
             if (!SplitHostPort(socket_addr, port_out, host_out)) {
+#if HAVE_SOCKADDR_UN
+                // Allow unix domain sockets for -proxy and -onion e.g. unix:/some/file/path
+                if ((port_option != "-proxy" && port_option != "-onion") || socket_addr.find(ADDR_PREFIX_UNIX) != 0) {
+                    return InitError(InvalidPortErrMsg(port_option, socket_addr));
+                }
+#else
                 return InitError(InvalidPortErrMsg(port_option, socket_addr));
+#endif
             }
         }
     }
@@ -1351,12 +1358,17 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     // -noproxy (or -proxy=0) as well as the empty string can be used to not set a proxy, this is the default
     std::string proxyArg = args.GetArg("-proxy", "");
     if (proxyArg != "" && proxyArg != "0") {
-        CService proxyAddr;
-        if (!Lookup(proxyArg, proxyAddr, 9050, fNameLookup)) {
-            return InitError(strprintf(_("Invalid -proxy address or hostname: '%s'"), proxyArg));
+        Proxy addrProxy;
+        if (IsUnixSocketPath(proxyArg)) {
+            addrProxy = Proxy(UnixSocket(proxyArg), proxyRandomize);
+        } else {
+            CService proxyAddr;
+            if (!Lookup(proxyArg, proxyAddr, 9050, fNameLookup))
+                return InitError(strprintf(_("Invalid -proxy address or hostname: '%s'"), proxyArg));
+
+            addrProxy = Proxy(proxyAddr, proxyRandomize);
         }
 
-        Proxy addrProxy = Proxy(proxyAddr, proxyRandomize);
         if (!addrProxy.IsValid())
             return InitError(strprintf(_("Invalid -proxy address or hostname: '%s'"), proxyArg));
 
@@ -1382,11 +1394,15 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
                       "reaching the Tor network is explicitly forbidden: -onion=0"));
             }
         } else {
-            CService addr;
-            if (!Lookup(onionArg, addr, 9050, fNameLookup) || !addr.IsValid()) {
-                return InitError(strprintf(_("Invalid -onion address or hostname: '%s'"), onionArg));
+            if (IsUnixSocketPath(onionArg)) {
+                onion_proxy = Proxy(UnixSocket(onionArg), proxyRandomize);
+            } else {
+                CService addr;
+                if (!Lookup(onionArg, addr, 9050, fNameLookup) || !addr.IsValid())
+                    return InitError(strprintf(_("Invalid -onion address or hostname: '%s'"), onionArg));
+
+                onion_proxy = Proxy(addr, proxyRandomize);
             }
-            onion_proxy = Proxy{addr, proxyRandomize};
         }
     }
 

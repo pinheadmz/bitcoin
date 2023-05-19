@@ -29,6 +29,9 @@ static const int DEFAULT_CONNECT_TIMEOUT = 5000;
 //! -dns default
 static const int DEFAULT_NAME_LOOKUP = true;
 
+/** Prefix for unix domain socket addresses (which are local filesystem paths) */
+const std::string ADDR_PREFIX_UNIX = "unix:";
+
 enum class ConnectionDirection {
     None = 0,
     In = (1U << 0),
@@ -45,16 +48,55 @@ static inline bool operator&(ConnectionDirection a, ConnectionDirection b) {
     return (underlying(a) & underlying(b));
 }
 
+/**
+ * Check if a string is a valid UNIX domain socket path
+ *
+ * @param      name     The string provided by the user representing a local path
+ *
+ * @returns Whether the string has proper format, length, and points to an existing file path
+ */
+bool IsUnixSocketPath(const std::string& name);
+
+struct UnixSocket
+{
+    std::string m_path;
+
+    explicit UnixSocket(std::string path) : m_path(path) {}
+
+    bool IsValid() const { return IsUnixSocketPath(m_path); }
+    std::string ToStringAddr() const { return ADDR_PREFIX_UNIX + m_path; }
+};
+
 class Proxy
 {
 public:
     Proxy(): randomize_credentials(false) {}
     explicit Proxy(const CService &_proxy, bool _randomize_credentials=false): proxy(_proxy), randomize_credentials(_randomize_credentials) {}
+    explicit Proxy(const UnixSocket &_proxy, bool _randomize_credentials=false): proxy(_proxy), randomize_credentials(_randomize_credentials) {}
 
-    bool IsValid() const { return proxy.IsValid(); }
-
-    CService proxy;
+    std::variant<CService, UnixSocket> proxy;
     bool randomize_credentials;
+
+    bool IsValid() const
+    {
+        if (const CService* service = std::get_if<CService>(&proxy)) return service->IsValid();
+        if (const UnixSocket* socket = std::get_if<UnixSocket>(&proxy)) return socket->IsValid();
+        return false;
+    }
+
+    sa_family_t GetFamily() const
+    {
+        if (const CService* service = std::get_if<CService>(&proxy)) return service->GetTCPFamily();
+        if (const UnixSocket* socket = std::get_if<UnixSocket>(&proxy)) return AF_UNIX;
+        return AF_UNSPEC;
+    }
+
+    std::string ToStringAddr() const
+    {
+        if (const CService* service = std::get_if<CService>(&proxy)) return service->ToStringAddrPort();
+        if (const UnixSocket* socket = std::get_if<UnixSocket>(&proxy)) return socket->ToStringAddr();
+        return "";
+    }
 };
 
 /** Credentials for proxy authentication */
@@ -179,16 +221,16 @@ CService LookupNumeric(const std::string& name, uint16_t portDefault = 0, DNSLoo
 bool LookupSubNet(const std::string& subnet_str, CSubNet& subnet_out);
 
 /**
- * Create a TCP socket in the given address family.
+ * Create a TCP or UNIX socket in the given address family.
  * @param[in] address_family The socket is created in the same address family as this address.
  * @return pointer to the created Sock object or unique_ptr that owns nothing in case of failure
  */
-std::unique_ptr<Sock> CreateSockTCP(const CService& address_family);
+std::unique_ptr<Sock> CreateSockOS(const sa_family_t& address_family);
 
 /**
- * Socket factory. Defaults to `CreateSockTCP()`, but can be overridden by unit tests.
+ * Socket factory. Defaults to `CreateSockOS()`, but can be overridden by unit tests.
  */
-extern std::function<std::unique_ptr<Sock>(const CService&)> CreateSock;
+extern std::function<std::unique_ptr<Sock>(const sa_family_t&)> CreateSock;
 
 /**
  * Try to connect to the specified service on the specified socket.

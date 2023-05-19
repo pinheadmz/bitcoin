@@ -843,6 +843,19 @@ bool CService::SetSockAddr(const struct sockaddr *paddr)
     }
 }
 
+sa_family_t CService::GetTCPFamily() const
+{
+    switch (m_net) {
+    case NET_IPV4:
+        return AF_INET;
+    case NET_IPV6:
+        return AF_INET6;
+    default:
+        return AF_UNSPEC; // Not TCP
+    }
+
+}
+
 uint16_t CService::GetPort() const
 {
     return port;

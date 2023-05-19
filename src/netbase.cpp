@@ -21,6 +21,10 @@
 #include <limits>
 #include <memory>
 
+#if HAVE_SOCKADDR_UN
+#include <sys/un.h>
+#endif
+
 #ifndef WIN32
 #include <fcntl.h>
 #endif
@@ -238,6 +242,28 @@ CService LookupNumeric(const std::string& name, uint16_t portDefault, DNSLookupF
     if(!Lookup(name, addr, portDefault, false, dns_lookup_function))
         addr = CService();
     return addr;
+}
+
+bool IsUnixSocketPath(const std::string& name)
+{
+#if HAVE_SOCKADDR_UN
+    if (name.find(ADDR_PREFIX_UNIX) != 0) return false;
+
+    // Split off "unix:" prefix
+    std::string str{name.substr(ADDR_PREFIX_UNIX.length())};
+
+    // Path size limit is platform-dependent
+    // see https://manpages.ubuntu.com/manpages/xenial/en/man7/unix.7.html
+    if (str.size() + 1 > sizeof(((sockaddr_un*)nullptr)->sun_path)) return false;
+
+    // Path must exist
+    fs::path path = fs::PathFromString(str);
+    if (!fs::exists(path)) return false;
+
+    return true;
+#else
+    return false;
+#endif
 }
 
 /** SOCKS version */
@@ -482,18 +508,22 @@ bool Socks5(const std::string& strDest, uint16_t port, const ProxyCredentials* a
     return true;
 }
 
-std::unique_ptr<Sock> CreateSockTCP(const CService& address_family)
+std::unique_ptr<Sock> CreateSockOS(const sa_family_t& address_family)
 {
-    // Create a sockaddr from the specified service.
-    struct sockaddr_storage sockaddr;
-    socklen_t len = sizeof(sockaddr);
-    if (!address_family.GetSockAddr((struct sockaddr*)&sockaddr, &len)) {
-        LogPrintf("Cannot create socket for %s: unsupported network\n", address_family.ToStringAddrPort());
-        return nullptr;
+    // Not IPv4, IPv6 or UNIX
+    if (address_family == AF_UNSPEC) return nullptr;
+
+#if HAVE_SOCKADDR_UN
+    // Create a UNIX socket.
+    if (address_family == AF_UNIX) {
+        SOCKET hSocket = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (hSocket == INVALID_SOCKET) return nullptr;
+        return std::make_unique<Sock>(hSocket);
     }
+#endif
 
     // Create a TCP socket in the address family of the specified service.
-    SOCKET hSocket = socket(((struct sockaddr*)&sockaddr)->sa_family, SOCK_STREAM, IPPROTO_TCP);
+    SOCKET hSocket = socket(address_family, SOCK_STREAM, IPPROTO_TCP);
     if (hSocket == INVALID_SOCKET) {
         return nullptr;
     }
@@ -531,7 +561,7 @@ std::unique_ptr<Sock> CreateSockTCP(const CService& address_family)
     return sock;
 }
 
-std::function<std::unique_ptr<Sock>(const CService&)> CreateSock = CreateSockTCP;
+std::function<std::unique_ptr<Sock>(const sa_family_t&)> CreateSock = CreateSockOS;
 
 template<typename... Args>
 static void LogConnectFailure(bool manual_connection, const char* fmt, const Args&... args) {
