@@ -11,18 +11,34 @@ Install the OS X command line tools:
 
 When the popup appears, click `Install`.
 
-Then install [Homebrew](http://brew.sh).
+Then install [Homebrew](https://brew.sh).
 
 Dependencies
 ----------------------
 
-    brew install automake berkeley-db4 libtool boost --c++11 miniupnpc openssl pkg-config protobuf --c++11 qt5 libevent
+    brew install automake berkeley-db4 libtool boost miniupnpc openssl pkg-config protobuf python3 qt libevent
 
-In case you want to build the disk image with `make deploy` (.dmg / optional), you need RSVG
+See [dependencies.md](dependencies.md) for a complete overview.
+
+If you want to build the disk image with `make deploy` (.dmg / optional), you need RSVG
 
     brew install librsvg
 
 NOTE: Building with Qt4 is still supported, however, could result in a broken UI. Building with Qt5 is recommended.
+
+Berkeley DB
+-----------
+It is recommended to use Berkeley DB 4.8. If you have to build it yourself,
+you can use [the installation script included in contrib/](/contrib/install_db4.sh)
+like so
+
+```shell
+./contrib/install_db4.sh .
+```
+
+from the root of the repository.
+
+**Note**: You only need Berkeley DB if the wallet is enabled (see the section *Disable-Wallet mode* below).
 
 Build Bitcoin Core
 ------------------------
@@ -74,26 +90,9 @@ Other commands:
     ./src/bitcoin-cli --help # Outputs a list of command-line options.
     ./src/bitcoin-cli help # Outputs a list of RPC commands when the daemon is running.
 
-Using Qt Creator as IDE
-------------------------
-You can use Qt Creator as an IDE, for bitcoin development.
-Download and install the community edition of [Qt Creator](https://www.qt.io/download/).
-Uncheck everything except Qt Creator during the installation process.
-
-1. Make sure you installed everything through Homebrew mentioned above
-2. Do a proper ./configure --enable-debug
-3. In Qt Creator do "New Project" -> Import Project -> Import Existing Project
-4. Enter "bitcoin-qt" as project name, enter src/qt as location
-5. Leave the file selection as it is
-6. Confirm the "summary page"
-7. In the "Projects" tab select "Manage Kits..."
-8. Select the default "Desktop" kit and select "Clang (x86 64bit in /usr/bin)" as compiler
-9. Select LLDB as debugger (you might need to set the path to your installation)
-10. Start debugging with Qt Creator
-
 Notes
 -----
 
-* Tested on OS X 10.8 through 10.12 on 64-bit Intel processors only.
+* Tested on OS X 10.8 through 10.13 on 64-bit Intel processors only.
 
 * Building with downloaded Qt binaries is not officially supported. See the notes in [#7714](https://github.com/bitcoin/bitcoin/issues/7714)
