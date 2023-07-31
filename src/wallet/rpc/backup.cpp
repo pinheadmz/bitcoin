@@ -1597,7 +1597,7 @@ RPCHelpMan importdescriptors()
             "may report that the imported keys, addresses or scripts exist but related transactions are still missing.\n"
             "The rescan is significantly faster if block filters are available (using startup option \"-blockfilterindex=1\").\n",
                 {
-                    {"requests", RPCArg::Type::ARR, RPCArg::Optional::NO, "Data to be imported",
+                    {"requests", RPCArg::Type::ARR, RPCArg::Optional::NO, "Data to be imported. Compatible with the output of rpc `listdescriptors`",
                         {
                             {"", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "",
                                 {
@@ -1617,7 +1617,8 @@ RPCHelpMan importdescriptors()
                                 },
                             },
                         },
-                        RPCArgOptions{.oneline_description="\"requests\""}},
+                        RPCArgOptions{.skip_type_check=true,
+                                      .type_str={"\"requests\"", "json array or object containing \"descriptors\" array"}}},
                 },
                 RPCResult{
                     RPCResult::Type::ARR, "", "Response is an array with the same size as the input that has the execution result",
@@ -1639,7 +1640,8 @@ RPCHelpMan importdescriptors()
                 RPCExamples{
                     HelpExampleCli("importdescriptors", "'[{ \"desc\": \"<my descriptor>\", \"timestamp\":1455191478, \"internal\": true }, "
                                           "{ \"desc\": \"<my descriptor 2>\", \"label\": \"example 2\", \"timestamp\": 1455191480 }]'") +
-                    HelpExampleCli("importdescriptors", "'[{ \"desc\": \"<my descriptor>\", \"timestamp\":1455191478, \"active\": true, \"range\": [0,100], \"label\": \"<my bech32 wallet>\" }]'")
+                    HelpExampleCli("importdescriptors", "'[{ \"desc\": \"<my descriptor>\", \"timestamp\":1455191478, \"active\": true, \"range\": [0,100], \"label\": \"<my bech32 wallet>\" }]'") +
+                    HelpExampleCli("importdescriptors", "'{ \"descriptors\": [{ \"desc\": \"<my descriptor>\", \"timestamp\":1455191478, \"active\": true, \"range\": [0,100], \"label\": \"<my bech32 wallet>\" }]}'")
                 },
         [&](const RPCHelpMan& self, const JSONRPCRequest& main_request) -> UniValue
 {
@@ -1665,7 +1667,20 @@ RPCHelpMan importdescriptors()
     // the passphrase is used to top up the keypool.
     LOCK(pwallet->m_relock_mutex);
 
-    const UniValue& requests = main_request.params[0];
+    const UniValue& main = main_request.params[0];
+    UniValue requests;
+    if (main.isObject()) {
+        if (!main.exists("descriptors")) {
+            throw JSONRPCError(RPC_WALLET_ERROR, "Object is missing \"descriptors\" array");
+        }
+        requests = main["descriptors"];
+    } else {
+        requests = main;
+    }
+    if (!requests.isArray()) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "\"requests\" must be JSON array or object containing \"descriptors\" array");
+    }
+
     const int64_t minimum_timestamp = 1;
     int64_t now = 0;
     int64_t lowest_timestamp = 0;

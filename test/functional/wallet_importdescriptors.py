@@ -712,5 +712,13 @@ class ImportDescriptorsTest(BitcoinTestFramework):
 
         assert_equal(temp_wallet.getbalance(), encrypted_wallet.getbalance())
 
+        self.log.info("Test that list/import descriptors are compatible")
+        self.nodes[1].createwallet("watch_wallet", blank=True, descriptors=True, disable_private_keys=True)
+        watch = self.nodes[1].get_wallet_rpc('watch_wallet')
+        w1_list = w1.listdescriptors()
+        watch.importdescriptors(w1_list)
+        assert_equal(w1_list["descriptors"], watch.listdescriptors()["descriptors"])
+
+
 if __name__ == '__main__':
     ImportDescriptorsTest().main()
