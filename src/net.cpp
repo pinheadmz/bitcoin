@@ -364,17 +364,13 @@ bool IsLocal(const CService& addr)
     return mapLocalHost.count(addr) > 0;
 }
 
-static void InitializePermissionFlags(NetPermissionFlags& flags, ServiceFlags& service_flags) {
+static void InitializePermissionFlags(NetPermissionFlags& flags) {
     if (NetPermissions::HasFlag(flags, NetPermissionFlags::Implicit)) {
         NetPermissions::ClearFlag(flags, NetPermissionFlags::Implicit);
         if (gArgs.GetBoolArg("-whitelistforcerelay", DEFAULT_WHITELISTFORCERELAY)) NetPermissions::AddFlag(flags, NetPermissionFlags::ForceRelay);
         if (gArgs.GetBoolArg("-whitelistrelay", DEFAULT_WHITELISTRELAY)) NetPermissions::AddFlag(flags, NetPermissionFlags::Relay);
         NetPermissions::AddFlag(flags, NetPermissionFlags::Mempool);
         NetPermissions::AddFlag(flags, NetPermissionFlags::NoBan);
-    }
-
-    if (NetPermissions::HasFlag(flags, NetPermissionFlags::BloomFilter)) {
-        service_flags = static_cast<ServiceFlags>(service_flags | NODE_BLOOM);
     }
 }
 
@@ -453,22 +449,21 @@ static CAddress GetBindAddress(const Sock& sock)
     return addr_bind;
 }
 
-std::optional<std::pair<CNode*, ServiceFlags>> CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, ConnectionType conn_type, bool use_v2transport)
+CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, ConnectionType conn_type, bool use_v2transport)
 {
     AssertLockNotHeld(m_unused_i2p_sessions_mutex);
     assert(conn_type != ConnectionType::INBOUND);
-    ServiceFlags node_services = nLocalServices;
 
     if (pszDest == nullptr) {
         if (IsLocal(addrConnect))
-            return std::nullopt;
+            return nullptr;
 
         // Look for an existing connection
         CNode* pnode = FindNode(static_cast<CService>(addrConnect));
         if (pnode)
         {
             LogPrintf("Failed to open new connection, already connected\n");
-            return std::nullopt;
+            return nullptr;
         }
     }
 
@@ -487,7 +482,7 @@ std::optional<std::pair<CNode*, ServiceFlags>> CConnman::ConnectNode(CAddress ad
             addrConnect = CAddress{MaybeFlipIPv6toCJDNS(rnd), NODE_NONE};
             if (!addrConnect.IsValid()) {
                 LogPrint(BCLog::NET, "Resolver returned invalid address %s for %s\n", addrConnect.ToStringAddrPort(), pszDest);
-                return std::nullopt;
+                return nullptr;
             }
             // It is possible that we already have a connection to the IP/port pszDest resolved to.
             // In that case, drop the connection that was just created.
@@ -495,7 +490,7 @@ std::optional<std::pair<CNode*, ServiceFlags>> CConnman::ConnectNode(CAddress ad
             CNode* pnode = FindNode(static_cast<CService>(addrConnect));
             if (pnode) {
                 LogPrintf("Failed to open new connection, already connected\n");
-                return std::nullopt;
+                return nullptr;
             }
         }
     }
@@ -544,7 +539,7 @@ std::optional<std::pair<CNode*, ServiceFlags>> CConnman::ConnectNode(CAddress ad
         } else if (use_proxy) {
             sock = CreateSock(proxy.proxy);
             if (!sock) {
-                return std::nullopt;
+                return nullptr;
             }
             connected = ConnectThroughProxy(proxy, addrConnect.ToStringAddr(), addrConnect.GetPort(),
                                             *sock, nConnectTimeout, proxyConnectionFailed);
@@ -552,7 +547,7 @@ std::optional<std::pair<CNode*, ServiceFlags>> CConnman::ConnectNode(CAddress ad
             // no proxy needed (none set for target network)
             sock = CreateSock(addrConnect);
             if (!sock) {
-                return std::nullopt;
+                return nullptr;
             }
             connected = ConnectSocketDirectly(addrConnect, *sock, nConnectTimeout,
                                               conn_type == ConnectionType::MANUAL);
@@ -565,7 +560,7 @@ std::optional<std::pair<CNode*, ServiceFlags>> CConnman::ConnectNode(CAddress ad
     } else if (pszDest && GetNameProxy(proxy)) {
         sock = CreateSock(proxy.proxy);
         if (!sock) {
-            return std::nullopt;
+            return nullptr;
         }
         std::string host;
         uint16_t port{default_port};
@@ -575,12 +570,12 @@ std::optional<std::pair<CNode*, ServiceFlags>> CConnman::ConnectNode(CAddress ad
                                         proxyConnectionFailed);
     }
     if (!connected) {
-        return std::nullopt;
+        return nullptr;
     }
 
     NetPermissionFlags permission_flags = NetPermissionFlags::None;
     AddWhitelistPermissionFlags(permission_flags, addrConnect, vWhitelistedRangeOutgoing);
-    InitializePermissionFlags(permission_flags, node_services);
+    InitializePermissionFlags(permission_flags);
 
     // Add node
     NodeId id = GetNewNodeId();
@@ -608,7 +603,7 @@ std::optional<std::pair<CNode*, ServiceFlags>> CConnman::ConnectNode(CAddress ad
     // We're making a new connection, harvest entropy from the time (and our peer count)
     RandAddEvent((uint32_t)id);
 
-    return std::make_pair(pnode, node_services);
+    return pnode;
 }
 
 void CNode::CloseSocketDisconnect()
@@ -1803,7 +1798,7 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
 
     AddWhitelistPermissionFlags(permission_flags, addr, vWhitelistedRange);
     ServiceFlags nodeServices = nLocalServices;
-    InitializePermissionFlags(permission_flags, nodeServices);
+    InitializePermissionFlags(permission_flags);
 
     {
         LOCK(m_nodes_mutex);
@@ -2920,15 +2915,13 @@ void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
     } else if (FindNode(std::string(pszDest)))
         return;
 
-    std::optional<std::pair<CNode*, ServiceFlags>> connected_node{ConnectNode(addrConnect, pszDest, fCountFailure, conn_type, use_v2transport)};
-    if (!connected_node)
+    CNode* pnode = ConnectNode(addrConnect, pszDest, fCountFailure, conn_type, use_v2transport);
+    if (!pnode)
         return;
-
-    CNode* pnode{connected_node->first};
 
     pnode->grantOutbound = std::move(grant_outbound);
 
-    m_msgproc->InitializeNode(*pnode, connected_node->second);
+    m_msgproc->InitializeNode(*pnode, nLocalServices);
     {
         LOCK(m_nodes_mutex);
         m_nodes.push_back(pnode);
