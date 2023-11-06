@@ -111,6 +111,62 @@ static UniValue GetServicesNames(ServiceFlags services)
     return servicesNames;
 }
 
+static RPCHelpMan getpeermemoryinfo()
+{
+    return RPCHelpMan{
+        "getpeermemoryinfo",
+        "\n how much memory does each peer use? \n",
+        {},
+        RPCResult{
+            RPCResult::Type::ARR, "", "",
+            {
+                {RPCResult::Type::OBJ, "", "",
+                {
+                    {
+                    {RPCResult::Type::NUM, "id", "Peer id"},
+                    {RPCResult::Type::NUM, "dynamic_cnode_memory", "the result of CNode::DynamicMemoryUsage"},
+                    {RPCResult::Type::NUM, "current_peer_memory", "the result of PeerManagerImpl::GetPeerMemory"},
+                    {RPCResult::Type::NUM, "max_dynamic_peer_memory", "the max result of PeerManagerImpl::GetPeerMemory in a ProcessMessage loop"},
+                    {RPCResult::Type::STR, "connection_type", "Type of connection: \n" + Join(CONNECTION_TYPE_DOC, ",\n") + ".\n"},
+                    {RPCResult::Type::BOOL, "relay_txes", "value of relay_tx bool from version message"},
+                }},
+            }},
+        },
+        RPCExamples{
+            HelpExampleCli("getpeermemoryinfo", "")
+            + HelpExampleRpc("getpeermemoryinfo", "")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    NodeContext& node = EnsureAnyNodeContext(request.context);
+    CConnman& connman = EnsureConnman(node);
+    PeerManager& peerman = EnsurePeerman(node);
+
+    UniValue ret(UniValue::VARR);
+
+    // map of node id -> memory usage
+    std::map<int64_t, size_t> info;
+    // call DynamicMemoryUsage on all CNode objects
+    connman.GetNodeMemory(info);
+    for (auto& [node_id, node_memory] : info) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("id", node_id);
+        obj.pushKV("dynamic_cnode_memory", node_memory);
+
+        auto [current_peer_mem, relay_txs, max_peer_mem] = peerman.PeerMemoryInfo(node_id);
+        obj.pushKV("current_peer_memory", current_peer_mem);
+        obj.pushKV("max_dynamic_peer_memory", max_peer_mem);
+
+        obj.pushKV("connection_type", connman.NodeToString(node_id));
+        obj.pushKV("relay_txs", relay_txs);
+        ret.push_back(obj);
+    }
+
+    return ret;
+},
+    };
+}
+
 static RPCHelpMan getpeerinfo()
 {
     return RPCHelpMan{
@@ -1151,6 +1207,7 @@ void RegisterNetRPCCommands(CRPCTable& t)
         {"network", &getconnectioncount},
         {"network", &ping},
         {"network", &getpeerinfo},
+        {"network", &getpeermemoryinfo},
         {"network", &addnode},
         {"network", &disconnectnode},
         {"network", &getaddednodeinfo},
