@@ -3900,3 +3900,23 @@ std::function<void(const CAddress& addr,
                    Span<const unsigned char> data,
                    bool is_incoming)>
     CaptureMessage = CaptureMessageToFile;
+
+namespace memusage {
+size_t RecursiveDynamicUsage(const CNetMessage& msg)
+{
+    // MallocUsage of the m_type string
+    // and DynamicUsage(vector) calls MallocUsage(vector)
+    return MallocUsage(msg.m_type.capacity()) + DynamicUsage(msg.m_recv.vch);
+}
+
+size_t RecursiveDynamicUsage(const std::list<CNetMessage>& msg_list)
+{
+    size_t val = 0;
+    // MallocUsage of the list
+    val = DynamicUsage(msg_list);
+    for (auto& msg : msg_list) {
+        val += RecursiveDynamicUsage(msg);
+    }
+    return val;
+}
+}

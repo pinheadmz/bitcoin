@@ -8,6 +8,8 @@
 #include <indirectmap.h>
 #include <prevector.h>
 #include <support/allocators/pool.h>
+#include <support/allocators/zeroafterfree.h>
+#include <streams.h>
 
 #include <cassert>
 #include <cstdlib>
@@ -18,7 +20,9 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <deque>
 
+class CNetMessage;
 
 namespace memusage
 {
@@ -88,6 +92,19 @@ template<typename X>
 static inline size_t DynamicUsage(const std::vector<X>& v)
 {
     return MallocUsage(v.capacity() * sizeof(X));
+}
+
+template<typename X, typename Y>
+static inline size_t DynamicUsage(const std::vector<X, Y>& v)
+{
+    return MallocUsage(v.capacity() * sizeof(X));
+}
+
+template<typename X>
+static inline size_t DynamicUsage(const std::deque<X>& v)
+{
+    // rough estimate of an additional 4 pointers of overhead
+    return (MallocUsage(sizeof(X))* v.size()) + 4*sizeof(void*);
 }
 
 template<unsigned int N, typename X, typename S, typename D>
@@ -163,6 +180,17 @@ static inline size_t DynamicUsage(const std::list<X>& l)
 {
     return MallocUsage(sizeof(list_node<X>)) * l.size();
 }
+
+// only handles dynamic memory usage of a CNetMessage object
+// static usage should be counted elsewhere
+size_t RecursiveDynamicUsage(const CNetMessage& msg);
+
+static inline size_t DynamicUsage(const std::string s)
+{
+    return MallocUsage(s.capacity());
+}
+
+size_t RecursiveDynamicUsage(const std::list<CNetMessage>& msg_list);
 
 template<typename X>
 struct unordered_node : private X
