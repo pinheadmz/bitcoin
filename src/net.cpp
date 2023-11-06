@@ -117,6 +117,132 @@ GlobalMutex g_maplocalhost_mutex;
 std::map<CNetAddr, LocalServiceInfo> mapLocalHost GUARDED_BY(g_maplocalhost_mutex);
 std::string strSubVersion;
 
+size_t CNode::DynamicMemoryUsage() {
+    size_t val = 0;
+
+    // normally calling memusage::DynamicMemoryUsage(unique_ptr) will properly
+    // take the sizeof(thing_pointed_to)
+    // in this case, we have to manually add the StaticMemoryUsage because
+    // Transport is a virtual class, and only instantiated on constructing a
+    // CNode. since sizeof() is compile-time, it only has a virtual table
+    // lookup instead of a full class definition.
+    val += m_transport->StaticMemoryUsage();
+    val += m_transport->DynamicMemoryUsage();
+
+    {
+        // m_send_memusage should represent memory usage of vSendMsg (minus some ptrs)
+        LOCK(cs_vSend);
+        val += m_send_memusage;
+    }
+
+    val += memusage::DynamicUsage(m_addr_name);
+    val += memusage::DynamicUsage(m_dest);
+    WITH_LOCK(m_subver_mutex, val += memusage::DynamicUsage(cleanSubVer));
+
+    // vRecvMsg doesn't have a lock because its only used by the SocketHandler thread
+    // this introduces access via RPC thread. could that cause an issue?
+    val += memusage::RecursiveDynamicUsage(vRecvMsg);
+
+    {
+        // m_msg_process_queue_size should represent memory usage of m_msg_process_queue (minus some ptrs)
+        LOCK(m_msg_process_queue_mutex);
+        val += m_msg_process_queue_size;
+    }
+
+    WITH_LOCK(cs_vSend, val += memusage::DynamicUsage(mapSendBytesPerMsgType));
+    WITH_LOCK(cs_vRecv, val += memusage::DynamicUsage(mapRecvBytesPerMsgType));
+
+    {
+        LOCK(m_sock_mutex);
+        val += memusage::DynamicUsage(m_sock);
+        val += memusage::DynamicUsage(m_i2p_sam_session);
+    }
+
+    return val;
+}
+
+size_t CNode::ConstantMemoryUsage() {
+    size_t val = 0;
+    val += sizeof(m_transport);
+    val += sizeof(m_permission_flags);
+
+    val += sizeof(m_sock_mutex);
+    {
+        LOCK(m_sock_mutex);
+        val += sizeof(m_sock);
+        val += sizeof(m_i2p_sam_session);
+    }
+
+    val += sizeof(cs_vSend);
+    {
+        LOCK(cs_vSend);
+        val += sizeof(m_send_memusage);
+        val += sizeof(nSendBytes);
+        val += sizeof(vSendMsg);
+        val += sizeof(mapSendBytesPerMsgType);
+    }
+
+    val += sizeof(cs_vRecv);
+    {
+        LOCK(cs_vRecv);
+        val += sizeof(nRecvBytes);
+        val += sizeof(mapRecvBytesPerMsgType);
+    }
+
+    val += sizeof(m_last_send);
+    val += sizeof(m_last_recv);
+    val += sizeof(m_connected);
+    val += sizeof(nTimeOffset);
+
+    val += sizeof(addr);
+    val += sizeof(addrBind);
+    val += sizeof(m_addr_name);
+    val += sizeof(m_dest);
+    val += sizeof(m_inbound_onion);
+    val += sizeof(nVersion);
+
+    val += sizeof(m_subver_mutex);
+    WITH_LOCK(m_subver_mutex, val += sizeof(cleanSubVer));
+
+    val += sizeof(m_prefer_evict);
+    val += sizeof(fSuccessfullyConnected);
+    val += sizeof(fDisconnect);
+    val += sizeof(grantOutbound);
+    val += sizeof(nRefCount);
+    val += sizeof(nKeyedNetGroup);
+    val += sizeof(fPauseRecv);
+    val += sizeof(fPauseSend);
+    val += sizeof(m_conn_type);
+
+    val += sizeof(m_bip152_highbandwidth_to);
+    val += sizeof(m_bip152_highbandwidth_from);
+    val += sizeof(m_has_all_wanted_services);
+    val += sizeof(m_relays_txs);
+    val += sizeof(m_bloom_filter_loaded);
+    val += sizeof(m_last_block_time);
+    val += sizeof(m_last_tx_time);
+    val += sizeof(m_last_ping_time);
+    val += sizeof(m_min_ping_time);
+
+    val += sizeof(id);
+    val += sizeof(nLocalHostNonce);
+    val += sizeof(m_greatest_common_version);
+    val += sizeof(m_recv_flood_size);
+    val += sizeof(vRecvMsg);
+
+    val += sizeof(m_msg_process_queue_mutex);
+    {
+        LOCK(m_msg_process_queue_mutex);
+        val += sizeof(m_msg_process_queue);
+        val += sizeof(m_msg_process_queue_size);
+    }
+
+    val += sizeof(m_addr_local_mutex);
+    WITH_LOCK(m_addr_local_mutex, val += sizeof(addrLocal));
+
+    return val;
+}
+
 size_t CSerializedNetMsg::GetMemoryUsage() const noexcept
 {
     // Don't count the dynamic memory used for the m_type string, by assuming it fits in the
