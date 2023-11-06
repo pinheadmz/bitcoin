@@ -398,6 +398,8 @@ struct Peer {
     /** Transaction relay data. May be a nullptr. */
     std::unique_ptr<TxRelay> m_tx_relay GUARDED_BY(m_tx_relay_mutex);
 
+    size_t ConstantMemoryUsage() const;
+
     std::atomic<size_t> inaccessible_dyn_memusage{0};
 };
 
@@ -1669,6 +1671,66 @@ PeerRef PeerManagerImpl::RemovePeer(NodeId id)
         m_peer_map.erase(it);
     }
     return ret;
+}
+
+// sanity check. should be comparable to sizeof(peer)
+size_t Peer::ConstantMemoryUsage() const
+{
+    size_t val = 0;
+
+    val += sizeof(m_id);
+    val += sizeof(m_our_services);
+    val += sizeof(m_their_services);
+
+    val += sizeof(m_misbehavior_mutex);
+    val += sizeof(m_misbehavior_score);
+    val += sizeof(m_should_discourage);
+
+    val += sizeof(m_block_inv_mutex);
+    val += sizeof(m_blocks_for_inv_relay);
+    val += sizeof(m_blocks_for_headers_relay);
+    val += sizeof(m_continuation_block);
+
+    val += sizeof(m_starting_height);
+    val += sizeof(m_ping_nonce_sent);
+    val += sizeof(m_ping_start);
+    val += sizeof(m_ping_queued);
+    val += sizeof(m_wtxid_relay);
+
+    val += sizeof(m_fee_filter_sent);
+    val += sizeof(m_next_send_feefilter);
+
+    val += sizeof(m_addrs_to_send);
+    val += sizeof(m_addr_known);
+    val += sizeof(m_addr_relay_enabled);
+    val += sizeof(m_getaddr_sent);
+    val += sizeof(m_addr_send_times_mutex);
+    val += sizeof(m_next_addr_send);
+    val += sizeof(m_next_local_addr_send);
+
+    val += sizeof(m_wants_addrv2);
+    val += sizeof(m_getaddr_recvd);
+    val += sizeof(m_addr_token_bucket);
+    val += sizeof(m_addr_token_timestamp);
+    val += sizeof(m_addr_rate_limited);
+    val += sizeof(m_addr_processed);
+
+    val += sizeof(m_inv_triggered_getheaders_before_sync);
+    val += sizeof(m_getdata_requests_mutex);
+    val += sizeof(m_getdata_requests);
+    val += sizeof(m_last_getheaders_timestamp);
+    val += sizeof(m_headers_sync_mutex);
+    val += sizeof(m_headers_sync);
+    val += sizeof(m_sent_sendheaders);
+
+    val += sizeof(m_num_unconnecting_headers_msgs);
+    val += sizeof(m_headers_sync_timeout);
+    val += sizeof(m_prefers_headers);
+
+    val += sizeof(m_tx_relay_mutex);
+    val += sizeof(m_tx_relay);
+
+    return val;
 }
 
 bool PeerManagerImpl::GetNodeStateStats(NodeId nodeid, CNodeStateStats& stats) const
