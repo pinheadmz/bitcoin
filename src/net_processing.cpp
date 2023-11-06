@@ -399,8 +399,10 @@ struct Peer {
     std::unique_ptr<TxRelay> m_tx_relay GUARDED_BY(m_tx_relay_mutex);
 
     size_t ConstantMemoryUsage() const;
+    size_t DynamicMemoryUsage() EXCLUSIVE_LOCKS_REQUIRED(!m_block_inv_mutex, !m_getdata_requests_mutex, !m_headers_sync_mutex, !m_tx_relay_mutex);
 
     std::atomic<size_t> inaccessible_dyn_memusage{0};
+    std::atomic<size_t> ongoing_max_memusage{0};
 };
 
 using PeerRef = std::shared_ptr<Peer>;
@@ -1731,6 +1733,50 @@ size_t Peer::ConstantMemoryUsage() const
     val += sizeof(m_tx_relay);
 
     return val;
+}
+
+size_t Peer::DynamicMemoryUsage()
+{
+    size_t dy = 0;
+
+    {
+        LOCK(m_block_inv_mutex);
+        dy += memusage::DynamicUsage(m_blocks_for_inv_relay);
+        dy += memusage::DynamicUsage(m_blocks_for_headers_relay);
+    }
+
+    // usage of m_addrs_to_send & m_addr_known
+    dy += inaccessible_dyn_memusage;
+
+    WITH_LOCK(m_getdata_requests_mutex, dy += memusage::DynamicUsage(m_getdata_requests));
+
+    {
+        LOCK(m_headers_sync_mutex);
+        dy += memusage::DynamicUsage(m_headers_sync);
+        if (m_headers_sync) { dy += memusage::DynamicUsage(m_headers_sync->m_redownloaded_headers);}
+    }
+
+    LOCK(m_tx_relay_mutex);
+    if (m_tx_relay)
+    {
+        dy += memusage::DynamicUsage(m_tx_relay);
+
+        {
+            LOCK(m_tx_relay->m_bloom_filter_mutex);
+            dy += memusage::DynamicUsage(m_tx_relay->m_bloom_filter);
+            if (m_tx_relay->m_bloom_filter) {
+                dy += m_tx_relay->m_bloom_filter->DynamicUsage();
+            }
+        }
+
+        {
+            LOCK(m_tx_relay->m_tx_inventory_mutex);
+            dy += m_tx_relay->m_tx_inventory_known_filter.DynamicUsage();
+            dy += memusage::DynamicUsage(m_tx_relay->m_tx_inventory_to_send);
+        }
+    }
+
+    return dy;
 }
 
 bool PeerManagerImpl::GetNodeStateStats(NodeId nodeid, CNodeStateStats& stats) const
@@ -3415,6 +3461,9 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
     PeerRef peer = GetPeerRef(pfrom.GetId());
     if (peer == nullptr) return;
+
+    size_t mem = peer->DynamicMemoryUsage();
+    if (mem > peer->ongoing_max_memusage) { peer->ongoing_max_memusage = mem; }
 
     if (msg_type == NetMsgType::VERSION) {
         if (pfrom.nVersion != 0) {
