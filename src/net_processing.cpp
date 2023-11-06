@@ -393,11 +393,12 @@ struct Peer {
         , m_our_services{our_services}
     {}
 
-private:
     mutable Mutex m_tx_relay_mutex;
 
     /** Transaction relay data. May be a nullptr. */
     std::unique_ptr<TxRelay> m_tx_relay GUARDED_BY(m_tx_relay_mutex);
+
+    std::atomic<size_t> inaccessible_dyn_memusage{0};
 };
 
 using PeerRef = std::shared_ptr<Peer>;
@@ -5028,6 +5029,10 @@ bool PeerManagerImpl::ProcessMessages(CNode* pfrom, std::atomic<bool>& interrupt
 
     PeerRef peer = GetPeerRef(pfrom->GetId());
     if (peer == nullptr) return false;
+
+    peer->inaccessible_dyn_memusage = (
+           memusage::DynamicUsage(peer->m_addrs_to_send)
+         + memusage::DynamicUsage(peer->m_addr_known));
 
     {
         LOCK(peer->m_getdata_requests_mutex);
