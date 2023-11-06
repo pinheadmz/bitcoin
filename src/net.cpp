@@ -690,6 +690,69 @@ V1Transport::V1Transport(const NodeId node_id) noexcept
     Reset();
 }
 
+size_t V1Transport::StaticMemoryUsage()
+{
+    size_t val = 0;
+    val += sizeof(m_magic_bytes);
+    val += sizeof(m_node_id);
+
+    val += sizeof(m_recv_mutex);
+    {
+        LOCK(m_recv_mutex);
+        val += sizeof(hasher);
+        val += sizeof(data_hash);
+        val += sizeof(in_data);
+        val += sizeof(hdrbuf);
+        val += sizeof(hdr);
+        val += sizeof(vRecv);
+        val += sizeof(nHdrPos);
+        val += sizeof(nDataPos);
+    }
+
+    val += sizeof(m_send_mutex);
+    {
+        LOCK(m_send_mutex);
+        val += sizeof(m_header_to_send);
+        val += sizeof(m_message_to_send);
+        val += sizeof(m_sending_header);
+        val += sizeof(m_bytes_sent);
+    }
+
+    return val;
+}
+
+size_t V1Transport::DynamicMemoryUsage()
+{
+    size_t val = 0;
+
+    {
+        LOCK(m_recv_mutex);
+        // for these two members that are CDataStreams, explicly add the dynamic
+        // memory usage of the internal vector
+        val += memusage::DynamicUsage(hdrbuf.vch);
+        val += memusage::DynamicUsage(vRecv.vch);
+    }
+
+    {
+        LOCK(m_send_mutex);
+        val += memusage::DynamicUsage(m_header_to_send);
+        val += memusage::DynamicUsage(m_message_to_send.data);
+        val += memusage::DynamicUsage(m_message_to_send.m_type);
+    }
+
+    return val;
+}
+
+size_t V2Transport::StaticMemoryUsage()
+{
+    return 0;
+}
+
+size_t V2Transport::DynamicMemoryUsage()
+{
+    return 0;
+}
+
 Transport::Info V1Transport::GetInfo() const noexcept
 {
     return {.transport_type = TransportProtocolType::V1, .session_id = {}};
