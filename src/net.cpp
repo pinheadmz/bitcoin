@@ -2017,6 +2017,11 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
     pnode->AddRef();
     m_msgproc->InitializeNode(*pnode, nodeServices);
 
+    if(ABCDBool) {
+        ABCDBool = false;
+        LogPrintf("ABCD CNode::ConstantMemoryUsage - %d \n", pnode->ConstantMemoryUsage());
+    }
+
     LogPrint(BCLog::NET, "connection from %s accepted\n", addr.ToStringAddrPort());
 
     {

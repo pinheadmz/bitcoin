@@ -1571,6 +1571,8 @@ private:
      */
     std::atomic_bool m_start_extra_block_relay_peers{false};
 
+    bool ABCDBool{true};
+
     /**
      * A vector of -bind=<address>:<port>=onion arguments each of which is
      * an address and port that are designated for incoming Tor connections.

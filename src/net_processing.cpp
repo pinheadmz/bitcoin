@@ -739,6 +739,8 @@ private:
       * on extra block-relay-only peers. */
     bool m_initial_sync_finished GUARDED_BY(cs_main){false};
 
+    bool ABCDBool{true};
+
     /** Protects m_peer_map. This mutex must not be locked while holding a lock
      *  on any of the mutexes inside a Peer object. */
     mutable Mutex m_peer_mutex;
@@ -1557,6 +1559,10 @@ void PeerManagerImpl::InitializeNode(CNode& node, ServiceFlags our_services)
         assert(m_txrequest.Count(nodeid) == 0);
     }
     PeerRef peer = std::make_shared<Peer>(nodeid, our_services);
+    if(ABCDBool) {
+        ABCDBool = false;
+        LogPrintf("ABCD Peer::ConstantMemoryUsage - %d \n", peer->ConstantMemoryUsage());
+    }
     {
         LOCK(m_peer_mutex);
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, peer);
