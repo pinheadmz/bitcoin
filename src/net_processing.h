@@ -83,6 +83,9 @@ public:
     /** Get statistics from node state */
     virtual bool GetNodeStateStats(NodeId nodeid, CNodeStateStats& stats) const = 0;
 
+    // returns <current dynamic usage, relay_txs, ongoing max dynamic usage>
+    virtual std::tuple<size_t, bool, size_t> PeerMemoryInfo(NodeId nodeid) = 0;
+
     /** Whether this node ignores txs received over p2p. */
     virtual bool IgnoresIncomingTxs() = 0;
 

@@ -515,6 +515,7 @@ public:
     std::optional<std::string> FetchBlock(NodeId peer_id, const CBlockIndex& block_index) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     bool GetNodeStateStats(NodeId nodeid, CNodeStateStats& stats) const override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+    std::tuple<size_t, bool, size_t> PeerMemoryInfo(NodeId nodeid) override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);;
     bool IgnoresIncomingTxs() override { return m_opts.ignore_incoming_txs; }
     void SendPings() override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void RelayTransaction(const uint256& txid, const uint256& wtxid) override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
@@ -1733,6 +1734,27 @@ size_t Peer::ConstantMemoryUsage() const
     val += sizeof(m_tx_relay);
 
     return val;
+}
+
+std::tuple<size_t, bool, size_t> PeerManagerImpl::PeerMemoryInfo(NodeId nodeid)
+{
+    PeerRef peer = GetPeerRef(nodeid);
+    if (!peer) return {0, false, 0};
+
+    size_t current_dynamic_usage = peer->DynamicMemoryUsage();
+    bool relay_txs = false;
+
+    {
+        LOCK(peer->m_tx_relay_mutex);
+        if (peer->m_tx_relay) {
+            LOCK(peer->m_tx_relay->m_bloom_filter_mutex);
+            relay_txs = peer->m_tx_relay->m_relay_txs;
+        }
+    }
+
+    size_t max_dynamic_usage = peer->ongoing_max_memusage;
+
+    return {current_dynamic_usage, relay_txs, max_dynamic_usage};
 }
 
 size_t Peer::DynamicMemoryUsage()
