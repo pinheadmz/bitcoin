@@ -2821,6 +2821,18 @@ bool PeerManagerImpl::TryLowWorkHeadersSync(Peer& peer, CNode& pfrom, const CBlo
             peer.m_headers_sync.reset(new HeadersSyncState(peer.m_id, m_chainparams.GetConsensus(),
                 chain_start_header, minimum_chain_work));
 
+            LogPrintf("ABCD m_headers_sync now exists\n");
+            auto bitdeque = peer.m_headers_sync->m_header_commitments;
+            LogPrintf("ABCD sizeof bitdeque - %d \n", sizeof(bitdeque));
+            auto stddeque = bitdeque.m_deque;
+            LogPrintf("ABCD m_deque was accessed\n");
+            auto first_element = stddeque[0];
+            LogPrintf("ABCD first element of m_deque was accessed\n");
+            LogPrintf("ABCD sizeof first element %d\n", sizeof(first_element));
+
+            LogPrintf("ABCD dynamic usage of bitdeque - %d \n",
+                    memusage::DynamicUsage(peer.m_headers_sync->m_header_commitments.m_deque));
+
             // Now a HeadersSyncState object for tracking this synchronization
             // is created, process the headers using it as normal. Failures are
             // handled inside of IsContinuationOfLowWorkHeadersSync.
