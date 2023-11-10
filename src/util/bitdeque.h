@@ -123,7 +123,6 @@ public:
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
-private:
     /** Deque of bitsets storing the actual bit data. */
     deque_type m_deque;
 

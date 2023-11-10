@@ -1781,7 +1781,11 @@ size_t Peer::DynamicMemoryUsage()
     {
         LOCK(m_headers_sync_mutex);
         dy += memusage::DynamicUsage(m_headers_sync);
-        if (m_headers_sync) { dy += memusage::DynamicUsage(m_headers_sync->m_redownloaded_headers);}
+        if (m_headers_sync)
+        {
+            dy += memusage::DynamicUsage(m_headers_sync->m_redownloaded_headers);
+            dy += memusage::DynamicUsage(m_headers_sync->m_header_commitments.m_deque);
+        }
     }
 
     LOCK(m_tx_relay_mutex);
