@@ -361,8 +361,19 @@ static bool HTTPBindAddresses(struct evhttp* http)
     uint16_t http_port{static_cast<uint16_t>(gArgs.GetIntArg("-rpcport", BaseParams().RPCPort()))};
     std::vector<std::pair<std::string, uint16_t>> endpoints;
 
+    // If all the -rpcbind addresses are UNIX socket paths,
+    // we do not need to worry about external IPs!
+    bool unix_only{gArgs.IsArgSet("-rpcbind")};
+    for (const std::string& strRPCBind : gArgs.GetArgs("-rpcbind")) {
+        if (!IsUnixSocketPath(strRPCBind)) {
+            unix_only = false;
+            break;
+        }
+    }
+
     // Determine what addresses to bind to
-    if (!(gArgs.IsArgSet("-rpcallowip") && gArgs.IsArgSet("-rpcbind"))) { // Default to loopback if not allowing external IPs
+    if (!(gArgs.IsArgSet("-rpcallowip") && gArgs.IsArgSet("-rpcbind")) && !unix_only) {
+        // Default to loopback if not allowing external IPs
         endpoints.emplace_back("::1", http_port);
         endpoints.emplace_back("127.0.0.1", http_port);
         if (gArgs.IsArgSet("-rpcallowip")) {
