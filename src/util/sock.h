@@ -54,6 +54,12 @@ public:
     Sock& operator=(const Sock&) = delete;
 
     /**
+     * Return the file descriptor of the underlying socket.
+     * Needed when passing the socket handle to libevent.
+     */
+    int GetFD() { return m_socket; };
+
+    /**
      * Move assignment operator, grab the socket from another object and close ours (if set).
      */
     virtual Sock& operator=(Sock&& other);

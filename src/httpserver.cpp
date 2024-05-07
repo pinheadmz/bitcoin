@@ -44,6 +44,10 @@
 
 #include <support/events.h>
 
+#if HAVE_SOCKADDR_UN
+#include <sys/un.h>
+#endif
+
 /** Maximum size of http request (request line + headers) */
 static const size_t MAX_HEADERS_SIZE = 8192;
 
@@ -394,7 +398,47 @@ static bool HTTPBindAddresses(struct evhttp* http)
     // Bind addresses
     for (std::vector<std::pair<std::string, uint16_t> >::iterator i = endpoints.begin(); i != endpoints.end(); ++i) {
         LogPrintf("Binding RPC on address %s port %i\n", i->first, i->second);
-        evhttp_bound_socket *bind_handle = evhttp_bind_socket_with_handle(http, i->first.empty() ? nullptr : i->first.c_str(), i->second);
+
+        evhttp_bound_socket *bind_handle;
+        if (!IsUnixSocketPath(i->first)) {
+            bind_handle = evhttp_bind_socket_with_handle(http, i->first.empty() ? nullptr : i->first.c_str(), i->second);
+        } else {
+            // Libevent doesn't handle UNIX sockets well. Create and bind to our
+            // own socket and pass it to libevent for http.
+
+            // Use static here to avoid the RAII destruction at the end of this
+            // function. We need the socket to stay open until we quit the program
+            // but we can't "move" the Sock instance into libevent, only the
+            // integer file descriptor.
+            static std::unique_ptr<Sock> sock = CreateSock(AF_UNIX);
+
+            const std::string path{i->first.substr(ADDR_PREFIX_UNIX.length())};
+
+            struct sockaddr_un addrun;
+            memset(&addrun, 0, sizeof(addrun));
+            addrun.sun_family = AF_UNIX;
+            memcpy(addrun.sun_path, path.c_str(), std::min(sizeof(addrun.sun_path) - 1, path.length()));
+            socklen_t len = sizeof(addrun);
+
+            if (sock->Bind((struct sockaddr*)&addrun, len)) {
+                int nErr = WSAGetLastError();
+                LogPrintf("Can not bind to UNIX socket at path %s: %s\n", path, NetworkErrorString(nErr));
+                continue;
+            } else {
+                LogPrintf("CAN bind to UNIX socket at path %s\n", path);
+            }
+
+            if (sock->Listen(/*backlog=*/5)) {
+                int nErr = WSAGetLastError();
+                LogPrintf("Can not listen to UNIX socket at path %s: %s\n", path, NetworkErrorString(nErr));
+                continue;
+            } else {
+                LogPrintf("CAN listen to UNIX socket at path %s\n", path);
+            }
+
+            bind_handle = evhttp_accept_socket_with_handle(http, sock->GetFD());
+        }
+
         if (bind_handle) {
             const std::optional<CNetAddr> addr{LookupHost(i->first, false)};
             if (i->first.empty() || (addr.has_value() && addr->IsBindAny())) {
