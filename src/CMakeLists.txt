@@ -208,6 +208,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   deploymentstatus.cpp
   flatfile.cpp
   headerssync.cpp
+  http.cpp
   httprpc.cpp
   httpserver.cpp
   i2p.cpp

@@ -21,6 +21,7 @@
 #include <consensus/amount.h>
 #include <deploymentstatus.h>
 #include <hash.h>
+#include <http.h>
 #include <httprpc.h>
 #include <httpserver.h>
 #include <index/blockfilterindex.h>
@@ -285,6 +286,7 @@ void Shutdown(NodeContext& node)
     StopHTTPRPC();
     StopREST();
     StopRPC();
+    StopHTTPServer_mz();
     StopHTTPServer();
     for (const auto& client : node.chain_clients) {
         client->flush();
@@ -734,6 +736,13 @@ static bool AppInitServers(NodeContext& node)
         return false;
     if (args.GetBoolArg("-rest", DEFAULT_REST_ENABLE)) StartREST(&node);
     StartHTTPServer();
+
+    if (!InitHTTPServer_mz()) {
+        LogPrintf("InitHTTPServer_mz failed\n");
+        return false;
+    }
+    StartHTTPServer_mz();
+
     return true;
 }
 
