@@ -38,15 +38,17 @@ struct HTTPRequest_mz
     std::string method;
     std::string target;
     std::string version;
-    std::map<std::string, std::string> headers;
+    Headers headers;
     std::string body;
+
+    std::unique_ptr<Sock> sock_client;
 };
 
-bool ParseRequest(HTTPRequest_mz* req, const std::unique_ptr<Sock>& sock_client) {
+bool ParseRequest(HTTPRequest_mz* req) {
     size_t max_data{MAX_HEADERS_SIZE};
     // Request Line aka Control Data https://httpwg.org/specs/rfc9110.html#rfc.section.6.2
     // Three words separated by spaces, terminated by \n or \r\n
-    std::string request_line = sock_client->RecvUntilTerminator('\n', MAX_WAIT_FOR_IO, g_interrupt_http, max_data);
+    std::string request_line = req->sock_client->RecvUntilTerminator('\n', MAX_WAIT_FOR_IO, g_interrupt_http, max_data);
     request_line = TrimString(request_line); // delete trailing \r if present
     if (request_line.length() < MIN_REQUEST_LINE_LENGTH) return false;
     const std::vector<std::string> parts{SplitString(request_line, ' ')};
@@ -60,7 +62,7 @@ bool ParseRequest(HTTPRequest_mz* req, const std::unique_ptr<Sock>& sock_client)
     // Headers https://httpwg.org/specs/rfc9110.html#rfc.section.6.3
     // A sequence of Field Lines https://httpwg.org/specs/rfc9110.html#rfc.section.5.2
     do {
-        std::string line = sock_client->RecvUntilTerminator('\n', MAX_WAIT_FOR_IO, g_interrupt_http, max_data);
+        std::string line = req->sock_client->RecvUntilTerminator('\n', MAX_WAIT_FOR_IO, g_interrupt_http, max_data);
         line = TrimString(line); // delete trailing \r if present
         // An empty line indicates end of the headers section https://www.rfc-editor.org/rfc/rfc2616#section-4
         if (line.length() == 0) break;
@@ -88,7 +90,7 @@ bool ParseRequest(HTTPRequest_mz* req, const std::unique_ptr<Sock>& sock_client)
 
     char buf[SOCKET_BUFFER_SIZE];
     while (req->body.length() != body_length) {
-        ssize_t nBytes = sock_client->Recv(buf, SOCKET_BUFFER_SIZE, /*flags=*/0);
+        ssize_t nBytes = req->sock_client->Recv(buf, SOCKET_BUFFER_SIZE, /*flags=*/0);
         if (nBytes == 0) break;
         if (nBytes < 0) return false;
         req->body += buf;
@@ -139,7 +141,7 @@ static void ThreadHTTP_mz()
         // and CConnman::AcceptConnection() in net.cpp
         struct sockaddr_storage sockaddr_client;
         socklen_t len_client = sizeof(sockaddr);
-        const std::unique_ptr<Sock> sock_client = sock->Accept((struct sockaddr*)&sockaddr_client, &len_client);
+        std::unique_ptr<Sock> sock_client = sock->Accept((struct sockaddr*)&sockaddr_client, &len_client);
         if (!sock_client) {
             // Nobody there, wait a tick before checking again
             g_interrupt_http.sleep_for(SELECT_TIMEOUT);
@@ -158,7 +160,8 @@ static void ThreadHTTP_mz()
         }
 
         HTTPRequest_mz req;
-        if (!ParseRequest(&req, sock_client)) {
+        req.sock_client = std::move(sock_client);
+        if (!ParseRequest(&req)) {
           // TODO: add client details
           LogPrintf("could not parse request from ...\n");
         } else {
