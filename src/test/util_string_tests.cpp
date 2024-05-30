@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <util/strencodings.h>
 #include <util/string.h>
 
 #include <boost/test/unit_test.hpp>
@@ -81,6 +82,17 @@ BOOST_AUTO_TEST_CASE(ConstevalFormatString_NumSpec)
     auto err_term{"Format specifier incorrectly terminated by end of string"};
     FailFmtWithError<1>("%", err_term);
     FailFmtWithError<1>("%1$", err_term);
+}
+
+BOOST_AUTO_TEST_CASE(case_insensitive_comparator_test)
+{
+    CaseInsensitiveComparator cmp;
+    BOOST_CHECK(cmp("A", "B"));
+    BOOST_CHECK(cmp("A", "b"));
+    BOOST_CHECK(cmp("a", "B"));
+    BOOST_CHECK(!cmp("B", "A"));
+    BOOST_CHECK(!cmp("B", "a"));
+    BOOST_CHECK(!cmp("b", "A"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
