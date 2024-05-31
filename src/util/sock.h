@@ -6,6 +6,7 @@
 #define BITCOIN_UTIL_SOCK_H
 
 #include <compat/compat.h>
+#include <span.h>
 #include <util/threadinterrupt.h>
 #include <util/time.h>
 
