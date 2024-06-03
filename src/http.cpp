@@ -10,6 +10,8 @@
 #include <logging.h>
 #include <netbase.h>
 #include <util/string.h>
+#include <time.h>
+#include <tinyformat.h>
 #include <util/threadnames.h>
 #include <util/threadinterrupt.h>
 
@@ -73,7 +75,7 @@ bool HTTPHeaders::ReadFromRequest(HTTPRequest_mz* req)
     return true;
 }
 
-std::string HTTPHeaders::Serialize()
+std::string HTTPHeaders::Stringify() const
 {
     std::string out;
     for (auto it = map.begin(); it != map.end(); ++it) {
@@ -153,7 +155,55 @@ bool HTTPRequest_mz::ReadBody()
     return body.length() == content_length;
 }
 
-bool ParseRequest(HTTPRequest_mz* req) {
+bool HTTPRequest_mz::WriteReply(HTTPStatusCode status, const std::string& body)
+{
+    // Response version matches request version
+    res.version_major = version_major;
+    res.version_minor = version_minor;
+
+    // Add response code and look up reason string
+    res.status = status;
+    res.reason = HTTPReason.find(status)->second;
+
+    // Add headers
+    // see libevent evhttp_make_header_response()
+    if (version_major == 1) {
+        // TODO: HTTP/1.0 keep-alive
+
+        if (version_minor >= 1) {
+            const int64_t now_seconds{TicksSinceEpoch<std::chrono::seconds>(SystemClock::now())};
+            res.headers.Write("Date", FormatRFC7231DateTime(now_seconds));
+
+            if (!body.empty()) {
+                res.headers.Write("Content-Length", std::to_string(body.length()));
+            }
+        }
+    }
+
+    if (!body.empty() && !res.headers.Find("Content-Type")) {
+        // Default type from libevent evhttp_new_object()
+        res.headers.Write("Content-Type", "text/html; charset=ISO-8859-1");
+    }
+
+    // TODO Connection: close
+
+    // Add body
+    res.body = body;
+
+    // Wrap it up and ship it
+    std::string reply{res.Stringify()};
+    int bytes_sent = sock_client->Send(reply.c_str(), reply.length(), 0);
+    // TODO check for errors
+    return bytes_sent > 0;
+}
+
+std::string HTTPResponse_mz::Stringify() const
+{
+    return strprintf("HTTP/%d.%d %d %s\r\n%s%s", version_major, version_minor, status, reason, headers.Stringify(), body);
+}
+
+bool ParseRequest(HTTPRequest_mz* req)
+{
     if (!req->ReadControlData()) {
         LogPrintf("Could not read control line\n");
     }
@@ -235,10 +285,7 @@ static void ThreadHTTP_mz()
             // TODO: add client details
             LogPrintf("could not parse request from ...\n");
         } else {
-            LogPrintf("HTTP req:\n");
-            LogPrintf("  method: %s target: %s version: %d.%d\n", req.method, req.target, req.version_major, req.version_minor);
-            LogPrintf("  headers: %s\n", req.headers.Serialize());
-            LogPrintf("  body: %s\n", req.body);
+            req.WriteReply(HTTP_OK, "pretty cool\n");
         }
     }
 
