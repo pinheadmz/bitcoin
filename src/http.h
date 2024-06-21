@@ -45,14 +45,16 @@ const std::map<HTTPStatusCode, std::string> HTTPReason {
 };
 
 // Forward declaration
-class HTTPRequest_mz;
+class HTTPClient;
+
+struct LineReader;
 
 class HTTPHeaders
 {
 public:
     std::optional<std::string> Find(const std::string key) const;
     void Write(const std::string key, const std::string value);
-    bool ReadFromRequest(HTTPRequest_mz* req);
+    bool Read(LineReader& reader);
     std::string Stringify() const;
 
 private:
@@ -75,24 +77,41 @@ public:
 class HTTPRequest_mz
 {
 public:
-    std::unique_ptr<Sock> sock_client;
-    size_t bytes_read{0};
-
     std::string method;
     std::string target;
     int version_major;
     int version_minor;
     HTTPHeaders headers;
     std::string body;
+    HTTPClient& client;
+    explicit HTTPRequest_mz(HTTPClient& httpclient) : client(httpclient) {}
 
-    bool ReadControlData();
-    bool ReadHeaders();
-    bool ReadBody();
+    // Readers return false if they need more data from the
+    // socket to parse properly. They throw errors if
+    // the data is invalid.
+    bool ReadControlData(LineReader& reader);
+    bool ReadHeaders(LineReader& reader);
+    bool ReadBody(LineReader& reader);
 
-    bool WriteReply(HTTPStatusCode status, const std::string& body = "");
+    void WriteReply(HTTPStatusCode status, const std::string& body = "");
+};
 
-private:
-    HTTPResponse_mz res;
+// Represents an external client
+// Similar to a p2p CNode, it has a connected socket
+// and tracks incoming and outgoing messages.
+class HTTPClient
+{
+public:
+    std::shared_ptr<Sock> sock;
+    std::vector<uint8_t> recvBuffer{};
+    std::vector<uint8_t> sendBuffer{};
+    std::deque<HTTPRequest_mz> requests;
+    std::deque<HTTPResponse_mz> responses;
+    bool disconnect{false};
+    explicit HTTPClient(std::shared_ptr<Sock> sockIn) : sock(std::move(sockIn)) {}
+
+    // Try to read an HTTP request from recvBuffer
+    bool ReadRequest();
 };
 
 bool ParseRequest(HTTPRequest_mz* req);

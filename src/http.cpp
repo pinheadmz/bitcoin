@@ -19,8 +19,59 @@ using util::SplitString;
 using util::TrimString;
 
 static std::unique_ptr<Sock> sock;
+//! HTTP server thread
 static std::thread g_thread_http;
 static CThreadInterrupt g_interrupt_http;
+
+//! Bound listening sockets
+static std::vector<std::shared_ptr<Sock>> listeningSockets;
+
+//! Connected clients with live HTTP connections
+static std::vector<HTTPClient> connectedClients;
+
+
+// TODO: could go in string.h?
+struct LineReader
+{
+    std::vector<uint8_t>::iterator start;
+    std::vector<uint8_t>::iterator it;
+    std::vector<uint8_t>::iterator end;
+
+    explicit LineReader(std::vector<uint8_t>& buffer)
+        : start(buffer.begin()), it(buffer.begin()), end(buffer.end()) {}
+
+    std::optional<std::string> ReadLine()
+    {
+        if (it == end) {
+            return std::nullopt;
+        }
+
+        std::string line{};
+        while (it != end) {
+            char c = static_cast<char>(*it);
+            line += c;
+            ++it;
+            if (c == '\n') break;
+        }
+
+        line = TrimString(line); // delete trailing \r and/or \n
+        return line;
+    }
+
+    size_t Left()
+    {
+        return std::distance(it, end);
+    }
+
+    std::string ReadLength(size_t len)
+    {
+        if (Left() < len) throw std::out_of_range("Not enough data in buffer");
+        std::string out(it, it + len);
+        it += len;
+        return out;
+    }
+};
+
 
 std::optional<std::string> HTTPHeaders::Find(const std::string key) const
 {
@@ -40,36 +91,28 @@ void HTTPHeaders::Write(const std::string key, const std::string value)
     }
 }
 
-bool HTTPHeaders::ReadFromRequest(HTTPRequest_mz* req)
+bool HTTPHeaders::Read(LineReader& reader)
 {
     // Headers https://httpwg.org/specs/rfc9110.html#rfc.section.6.3
     // A sequence of Field Lines https://httpwg.org/specs/rfc9110.html#rfc.section.5.2
     do {
-        size_t max_data{MAX_HEADERS_SIZE - req->bytes_read};
-        if (max_data < 1) return false;
+        auto maybe_line = reader.ReadLine();
+        if (!maybe_line) return false;
+        std::string line = *maybe_line;
 
-        try {
-            std::string line = req->sock_client->RecvUntilTerminator('\n', MAX_WAIT_FOR_IO, g_interrupt_http, max_data);
-            line = TrimString(line); // delete trailing \r if present
-            // An empty line indicates end of the headers section https://www.rfc-editor.org/rfc/rfc2616#section-4
-            if (line.length() == 0) break;
+        // An empty line indicates end of the headers section https://www.rfc-editor.org/rfc/rfc2616#section-4
+        if (line.length() == 0) break;
 
-            // Header line must have at least one ":"
-            // keys are not allowed to have delimiters like ":" but values are
-            // https://httpwg.org/specs/rfc9110.html#rfc.section.5.6.2
-            const size_t pos{line.find(':')};
-            if (pos == std::string::npos) return false;
+        // Header line must have at least one ":"
+        // keys are not allowed to have delimiters like ":" but values are
+        // https://httpwg.org/specs/rfc9110.html#rfc.section.5.6.2
+        const size_t pos{line.find(':')};
+        if (pos == std::string::npos) throw std::runtime_error("HTTP header missing colon (:)");
 
-            // Whitespace is optional
-            std::string key = TrimString(line.substr(0, pos));
-            std::string value = TrimString(line.substr(pos + 1));
-            Write(key, value);
-
-            // Does not include terminator char(s)
-            req->bytes_read += line.length();
-        } catch (...) {
-            return false;
-        }
+        // Whitespace is optional
+        std::string key = TrimString(line.substr(0, pos));
+        std::string value = TrimString(line.substr(pos + 1));
+        Write(key, value);
     } while (true);
 
     return true;
@@ -88,38 +131,33 @@ std::string HTTPHeaders::Stringify() const
     return out;
 }
 
-bool HTTPRequest_mz::ReadControlData()
+bool HTTPRequest_mz::ReadControlData(LineReader& reader)
 {
-    // It's the first thing we read so this is overkill
-    size_t max_data{MAX_HEADERS_SIZE - bytes_read};
-    if (max_data < 1) return false;
+    auto maybe_line = reader.ReadLine();
+    if (!maybe_line) return false;
+    std::string request_line = *maybe_line;
 
     // Request Line aka Control Data https://httpwg.org/specs/rfc9110.html#rfc.section.6.2
     // Three words separated by spaces, terminated by \n or \r\n
-    std::string request_line = sock_client->RecvUntilTerminator('\n', MAX_WAIT_FOR_IO, g_interrupt_http, max_data);
-    request_line = TrimString(request_line); // delete trailing \r if present
-    if (request_line.length() < MIN_REQUEST_LINE_LENGTH) return false;
+    if (request_line.length() < MIN_REQUEST_LINE_LENGTH) throw std::runtime_error("HTTP request line too short");
 
     const std::vector<std::string> parts{SplitString(request_line, ' ')};
-    if (parts.size() != 3) return false;
+    if (parts.size() != 3) throw std::runtime_error("HTTP request line malformed");
     method = parts[0];
     target = parts[1];
 
     // Two decimal digits separated by a dot https://httpwg.org/specs/rfc9110.html#rfc.section.2.5
-    if(std::sscanf(parts[2].c_str(), "HTTP/%d.%d", &version_major, &version_minor) != 2) return false;
-
-    // Does not include terminator char(s)
-    bytes_read += request_line.length();
+    if(std::sscanf(parts[2].c_str(), "HTTP/%d.%d", &version_major, &version_minor) != 2)  throw std::runtime_error("HTTP request version malformed");;
 
     return true;
 }
 
-bool HTTPRequest_mz::ReadHeaders()
+bool HTTPRequest_mz::ReadHeaders(LineReader& reader)
 {
-    return headers.ReadFromRequest(this);
+    return headers.Read(reader);
 }
 
-bool HTTPRequest_mz::ReadBody()
+bool HTTPRequest_mz::ReadBody(LineReader& reader)
 {
     // https://httpwg.org/specs/rfc9112.html#message.body
 
@@ -129,34 +167,20 @@ bool HTTPRequest_mz::ReadBody()
     if (!content_length_value) return true;
 
     uint64_t content_length;
-    if (!ParseUInt64(content_length_value.value(), &content_length)) return false;
+    if (!ParseUInt64(content_length_value.value(), &content_length)) throw std::runtime_error("Cannot paarse Content-Length value");
 
-    char buf[SOCKET_BUFFER_SIZE];
+    // Not enough data in buffer for expected body
+    if (reader.Left() < content_length) return false;
 
-    // Read expected number of bytes from socket into request body
-    while (body.length() < content_length && bytes_read < MAX_SIZE) {
-        ssize_t nBytes = sock_client->Recv(buf, SOCKET_BUFFER_SIZE, /*flags=*/0);
-        // Nothing left to read from socket
-        if (nBytes == 0) {
-          // We're done
-          if (body.length() == content_length) break;
-          // ...or Content-Length value was a lie?
-          return false;
-        }
-        // I/O error
-        if (nBytes < 0) return false;
+    body = reader.ReadLength(content_length);
 
-        // Add chunk to request body
-        body += buf;
-        bytes_read += nBytes;
-    }
-
-    // We could still return false here if we hit MAX_SIZE before finishing the body
-    return body.length() == content_length;
+    return true;
 }
 
-bool HTTPRequest_mz::WriteReply(HTTPStatusCode status, const std::string& body)
+void HTTPRequest_mz::WriteReply(HTTPStatusCode status, const std::string& body)
 {
+    HTTPResponse_mz res;
+
     // Response version matches request version
     res.version_major = version_major;
     res.version_minor = version_minor;
@@ -190,11 +214,8 @@ bool HTTPRequest_mz::WriteReply(HTTPStatusCode status, const std::string& body)
     // Add body
     res.body = body;
 
-    // Wrap it up and ship it
-    std::string reply{res.Stringify()};
-    int bytes_sent = sock_client->Send(reply.c_str(), reply.length(), 0);
-    // TODO check for errors
-    return bytes_sent > 0;
+    // Add to outgoing queue
+    client.responses.push_front(std::move(res));
 }
 
 std::string HTTPResponse_mz::Stringify() const
@@ -202,24 +223,30 @@ std::string HTTPResponse_mz::Stringify() const
     return strprintf("HTTP/%d.%d %d %s\r\n%s%s", version_major, version_minor, status, reason, headers.Stringify(), body);
 }
 
-bool ParseRequest(HTTPRequest_mz* req)
+bool HTTPClient::ReadRequest()
 {
-    if (!req->ReadControlData()) {
-        LogPrintf("Could not read control line\n");
-    }
+    // Create a new request object and try to fill it with data from recvBuffer
+    HTTPRequest_mz req(*this);
+    LineReader reader(recvBuffer);
 
-    if (!req->ReadHeaders()) {
-        LogPrintf("Could not read headers\n");
-    }
+    if (!req.ReadControlData(reader)) return false;
+    if (!req.ReadHeaders(reader)) return false;
+    if (!req.ReadBody(reader)) return false;
 
-    if (!req->ReadBody()) {
-        LogPrintf("Could not read body\n");
-    }
+    // Move the request into the queue
+    requests.push_front(req);
+
+    // Remove the bytes read out of the buffer
+    // TODO: if one of the Read functions above fails, we
+    //       may still need to clean up the buffer.
+    //       OR the caller should know we have a full buffer
+    //       but not valid request and drop the client?
+    recvBuffer.erase(reader.start, reader.it);
+
     return true;
 }
 
-bool InitHTTPServer_mz()
-{
+static bool BindListeningSocket() {
     // Copied from CService::GetSockAddr() in netaddress.cpp
     // see also ConnectDirectly() in netbase.cpp for unix socket
     // TODO: abstract all three into netbase
@@ -231,7 +258,7 @@ bool InitHTTPServer_mz()
     addrin.sin_addr.s_addr = htonl(0x7f000001); // 127.0.0.1
     socklen_t len = sizeof(addrin);
 
-    sock = CreateSock(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    std::shared_ptr<Sock> sock{CreateSock(AF_INET, SOCK_STREAM, IPPROTO_TCP)};
     if (!sock) {
         LogPrintf("Could not create sock for incoming http connections\n");
         return false;
@@ -247,8 +274,144 @@ bool InitHTTPServer_mz()
         return false;
     }
 
-  LogPrintf("Initialized HTTP_mz server\n");
-  return true;
+    listeningSockets.push_back(std::move(sock));
+    return true;
+}
+
+bool InitHTTPServer_mz()
+{
+    // TODO: Will be a for loop to bind to mutiple -rpcbind values
+    if (!BindListeningSocket()) {
+        LogPrintf("Unable to bind any endpoint for RPC server\n");
+        return false;
+    }
+
+    LogPrintf("Initialized HTTP_mz server\n");
+    return true;
+}
+
+static Sock::EventsPerSock GenerateEventsPerSock()
+{
+    // Map of sockets and a field of flags (send, recv)
+    // representing what we want to do with the socket
+    Sock::EventsPerSock events_per_sock;
+
+    // We want to receive anything available on all listening sockets
+    for (const auto& listenSock : listeningSockets) {
+        events_per_sock.emplace(listenSock, Sock::Events{Sock::RECV});
+    }
+
+    // We want to either read requests or send replies to connected sockets
+    // TODO: don't set SEND unless we have a response actually ready
+    //       or if theres leftover bytes in client.sendBuffer
+    //       maybe don't set RECV if we are pausing this socket due to flooding (max requests in queue?)
+    for (const HTTPClient& connectedClient : connectedClients) {
+        events_per_sock.emplace(connectedClient.sock, Sock::Events{Sock::SEND | Sock::RECV});
+    }
+
+    return events_per_sock;
+}
+
+static void HandleConnections()
+{
+    Sock::EventsPerSock events_per_sock{GenerateEventsPerSock()};
+    // WaitMany() mine as well be a static function, the context
+    // of the first Sock in the vector is not relevant.
+    if (events_per_sock.empty() || !events_per_sock.begin()->first->WaitMany(SELECT_TIMEOUT, events_per_sock)) {
+        // Nothing ready, wait a bit then proceed
+        g_interrupt_http.sleep_for(SELECT_TIMEOUT);
+    }
+
+    // Iterate through connectedClients and read or write depending on what is ready
+    for (auto& client : connectedClients) {
+        // First find the socket in events_per_sock corresponding to this client
+        const auto it = events_per_sock.find(client.sock);
+        if (it == events_per_sock.end()) continue;
+
+        // Socket is ready to send
+        if (it->second.occurred & Sock::SEND) {
+            // Prepare HTTP responses for the wire
+            while (client.responses.size() > 0) {
+                const HTTPResponse_mz res = client.responses.back();
+                client.responses.pop_back();
+                // Format response packet
+                std::string reply{res.Stringify()};
+                // Load into send buffer
+                client.sendBuffer.insert(client.sendBuffer.end(), reply.begin(), reply.end());
+            }
+
+            // Send everything we can
+            size_t res_length{client.sendBuffer.size()};
+            ssize_t bytes_sent = client.sock->Send(client.sendBuffer.data(), res_length, 0);
+
+            if (bytes_sent < 0) {
+                LogPrintf("Failed send to client (disconnecting): %s\n", NetworkErrorString(WSAGetLastError()));
+                // TODO: disconnect the client
+                // Skip to next client
+                continue;
+            }
+
+            // Remove sent bytes from the buffer
+            client.sendBuffer.erase(client.sendBuffer.begin(), client.sendBuffer.begin() + bytes_sent);
+        }
+
+        // Do not attempt to receive bytes if the send buffer is not drained
+        if ((it->second.occurred & Sock::RECV && client.sendBuffer.size() == 0)
+            || it->second.occurred & Sock::ERR) {
+
+            // Extend the receive buffer memory allocation to prepare for receiving
+            // TODO: ensure that we don't keep receiving bytes waiting for a \n for the parser
+            // "typical socket buffer is 8K-64K"
+            size_t current_size = client.recvBuffer.size();
+            size_t additional_size{0x10000};
+            client.recvBuffer.resize(current_size + additional_size);
+
+            // Read data from socket into the receive buffer
+            ssize_t bytes_received = client.sock->Recv(client.recvBuffer.data() + current_size, additional_size, MSG_DONTWAIT);
+
+            if (bytes_received == 0) {
+                // TODO: disconnect client
+                // Socket closed gracefully
+                continue;
+            }
+
+            if (bytes_received < 0) {
+                LogPrintf("Failed recv from client: %s\n", NetworkErrorString(WSAGetLastError()));
+                // TODO: disconnect the client
+                // Skip to next client
+                continue;
+            }
+
+            // Trim unused buffer memory
+            client.recvBuffer.resize(current_size + bytes_received);
+
+            // Try reading HTTP requests from the buffer
+            while (client.recvBuffer.size() > 0) {
+                try {
+                    // Stop reading if we need more data from the client
+                    if (!client.ReadRequest()) break;
+                } catch (const std::runtime_error& e) {
+                    LogPrintf("ReadRequest() error: %s\n", e.what());
+                    // TODO: send 400 bad request and disconnect client
+                    break;
+                }
+            }
+        }
+    }
+}
+
+static void AcceptConnections()
+{
+    for (auto& listeningSocket : listeningSockets) {
+        // Copied from Session::Accept() in i2p.cpp
+        // and CConnman::AcceptConnection() in net.cpp
+        struct sockaddr_storage sockaddr_client;
+        socklen_t len_client = sizeof(sockaddr);
+        std::shared_ptr<Sock> sock_client{listeningSocket->Accept((struct sockaddr*)&sockaddr_client, &len_client)};
+        if (sock_client) {
+            connectedClients.push_back(HTTPClient(sock_client));
+        }
+    }
 }
 
 static void ThreadHTTP_mz()
@@ -257,35 +420,27 @@ static void ThreadHTTP_mz()
     LogPrintf("Entering http_mz loop\n");
 
     while (!g_interrupt_http) {
-        // Copied from Session::Accept() in i2p.cpp
-        // and CConnman::AcceptConnection() in net.cpp
-        struct sockaddr_storage sockaddr_client;
-        socklen_t len_client = sizeof(sockaddr);
-        std::unique_ptr<Sock> sock_client = sock->Accept((struct sockaddr*)&sockaddr_client, &len_client);
-        if (!sock_client) {
-            // Nobody there, wait a tick before checking again
-            g_interrupt_http.sleep_for(SELECT_TIMEOUT);
-            continue;
+        HandleConnections();
+        AcceptConnections();
+
+        // TODO: temp for testing
+        for (auto& client : connectedClients) {
+            while (client.requests.size() > 0) {
+                LogPrintf("Sending test response\n");
+                auto req = client.requests.back();
+                client.requests.pop_back();
+                req.WriteReply(HTTP_OK, "Test response!\n");
+            }
         }
 
-        Sock::Event occurred;
-        if (!sock_client->Wait(MAX_WAIT_FOR_IO, Sock::RECV, &occurred)) {
-            LogPrintf("http_mz wait on socket failed\n");
-            continue;
-        }
-
-        if (occurred == 0) {
-            // Timeout, no incoming connections or errors within MAX_WAIT_FOR_IO.
-            continue;
-        }
-
-        HTTPRequest_mz req;
-        req.sock_client = std::move(sock_client);
-        if (!ParseRequest(&req)) {
-            // TODO: add client details
-            LogPrintf("could not parse request from ...\n");
-        } else {
-            req.WriteReply(HTTP_OK, "pretty cool\n");
+        // TODO: could be its own function
+       for (auto it = connectedClients.begin(); it != connectedClients.end();) {
+            if (it->disconnect) {
+                LogPrintf("removing client\n");
+                it = connectedClients.erase(it);
+            } else {
+                ++it; // move to the next element
+            }
         }
     }
 
