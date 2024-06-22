@@ -324,6 +324,8 @@ static void HandleConnections()
 
     // Iterate through connectedClients and read or write depending on what is ready
     for (auto& client : connectedClients) {
+        if (client.disconnect) continue;
+
         // First find the socket in events_per_sock corresponding to this client
         const auto it = events_per_sock.find(client.sock);
         if (it == events_per_sock.end()) continue;
@@ -338,16 +340,18 @@ static void HandleConnections()
                 std::string reply{res.Stringify()};
                 // Load into send buffer
                 client.sendBuffer.insert(client.sendBuffer.end(), reply.begin(), reply.end());
+                // TODO: handle keep-alive header
+                client.disconnect_after_send = true;
             }
 
             // Send everything we can
             size_t res_length{client.sendBuffer.size()};
             ssize_t bytes_sent = client.sock->Send(client.sendBuffer.data(), res_length, 0);
 
+            // Error sending through socket
             if (bytes_sent < 0) {
                 LogPrintf("Failed send to client (disconnecting): %s\n", NetworkErrorString(WSAGetLastError()));
-                // TODO: disconnect the client
-                // Skip to next client
+                client.disconnect = true;
                 continue;
             }
 
@@ -369,16 +373,16 @@ static void HandleConnections()
             // Read data from socket into the receive buffer
             ssize_t bytes_received = client.sock->Recv(client.recvBuffer.data() + current_size, additional_size, MSG_DONTWAIT);
 
+            // Socket closed gracefully
             if (bytes_received == 0) {
-                // TODO: disconnect client
-                // Socket closed gracefully
+                client.disconnect = true;
                 continue;
             }
 
+            // Socket closed unexpectedly
             if (bytes_received < 0) {
                 LogPrintf("Failed recv from client: %s\n", NetworkErrorString(WSAGetLastError()));
-                // TODO: disconnect the client
-                // Skip to next client
+                client.disconnect = true;
                 continue;
             }
 
@@ -392,7 +396,8 @@ static void HandleConnections()
                     if (!client.ReadRequest()) break;
                 } catch (const std::runtime_error& e) {
                     LogPrintf("ReadRequest() error: %s\n", e.what());
-                    // TODO: send 400 bad request and disconnect client
+                    // TODO: send 400 bad request before disconnecting
+                    client.disconnect = true;
                     break;
                 }
             }
@@ -414,6 +419,18 @@ static void AcceptConnections()
     }
 }
 
+static void DropConnections()
+{
+   for (auto it = connectedClients.begin(); it != connectedClients.end();) {
+        if (it->disconnect || (it->disconnect_after_send && it->sendBuffer.size() == 0)) {
+            LogPrintf("removing client\n");
+            it = connectedClients.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 static void ThreadHTTP_mz()
 {
     util::ThreadRename("http_mz");
@@ -422,6 +439,7 @@ static void ThreadHTTP_mz()
     while (!g_interrupt_http) {
         HandleConnections();
         AcceptConnections();
+        DropConnections();
 
         // TODO: temp for testing
         for (auto& client : connectedClients) {
@@ -433,15 +451,6 @@ static void ThreadHTTP_mz()
             }
         }
 
-        // TODO: could be its own function
-       for (auto it = connectedClients.begin(); it != connectedClients.end();) {
-            if (it->disconnect) {
-                LogPrintf("removing client\n");
-                it = connectedClients.erase(it);
-            } else {
-                ++it; // move to the next element
-            }
-        }
     }
 
     LogPrintf("Exited http_mz loop\n");

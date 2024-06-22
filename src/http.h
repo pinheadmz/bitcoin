@@ -107,7 +107,12 @@ public:
     std::vector<uint8_t> sendBuffer{};
     std::deque<HTTPRequest_mz> requests;
     std::deque<HTTPResponse_mz> responses;
+
+    // When true, client is destroyed and socket disconnected immediately on next loop
     bool disconnect{false};
+    // Indicates a non-keep-alive connection with a finished response in sendBuffer
+    bool disconnect_after_send{false};
+
     explicit HTTPClient(std::shared_ptr<Sock> sockIn) : sock(std::move(sockIn)) {}
 
     // Try to read an HTTP request from recvBuffer
