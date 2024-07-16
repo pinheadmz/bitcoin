@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <thread>
 
+#include <chainparamsbase.h>
+#include <common/args.h>
 #include <compat/compat.h>
 #include <logging.h>
 #include <netbase.h>
@@ -246,25 +248,24 @@ bool HTTPClient::ReadRequest()
     return true;
 }
 
-static bool BindListeningSocket() {
-    // Copied from CService::GetSockAddr() in netaddress.cpp
-    // see also ConnectDirectly() in netbase.cpp for unix socket
-    // TODO: abstract all three into netbase
-    // TODO: (obviously) do not hard code the address and port
-    struct sockaddr_in addrin;
-    memset(&addrin, 0, sizeof(struct sockaddr_in));
-    addrin.sin_family = AF_INET;
-    addrin.sin_port = htons(14444);
-    addrin.sin_addr.s_addr = htonl(0x7f000001); // 127.0.0.1
-    socklen_t len = sizeof(addrin);
+static bool BindListeningSocket(const CService& addrBind)
+{
+    // Create socket for listening for incoming connections
+    struct sockaddr_storage sockaddr;
+    socklen_t len = sizeof(sockaddr);
+    if (!addrBind.GetSockAddr((struct sockaddr*)&sockaddr, &len))
+    {
+        LogPrintf("Bind address family for %s not supported\n"), addrBind.ToStringAddrPort();
+        return false;
+    }
 
-    std::shared_ptr<Sock> sock{CreateSock(AF_INET, SOCK_STREAM, IPPROTO_TCP)};
+    std::shared_ptr<Sock> sock{CreateSock(addrBind.GetSAFamily(), SOCK_STREAM, IPPROTO_TCP)};
     if (!sock) {
         LogPrintf("Could not create sock for incoming http connections\n");
         return false;
     }
 
-    if (sock->Bind((struct sockaddr*)&addrin, len) == SOCKET_ERROR) {
+    if (sock->Bind(reinterpret_cast<struct sockaddr*>(&sockaddr), len) == SOCKET_ERROR) {
         LogPrintf("Could not bind to socket for http: %s\n", NetworkErrorString(WSAGetLastError()));
         return false;
     }
@@ -278,10 +279,49 @@ static bool BindListeningSocket() {
     return true;
 }
 
+/** Bind HTTP server to specified addresses */
+static bool HTTPBindAddresses()
+{
+    uint16_t http_port{static_cast<uint16_t>(gArgs.GetIntArg("-rpcport", BaseParams().RPCPort()))};
+    std::vector<std::pair<std::string, uint16_t>> endpoints;
+
+    // Determine what addresses to bind to
+    if (!(gArgs.IsArgSet("-rpcallowip") && gArgs.IsArgSet("-rpcbind"))) { // Default to loopback if not allowing external IPs
+        endpoints.emplace_back("::1", http_port);
+        endpoints.emplace_back("127.0.0.1", http_port);
+        if (gArgs.IsArgSet("-rpcallowip")) {
+            LogPrintf("WARNING: option -rpcallowip was specified without -rpcbind; this doesn't usually make sense\n");
+        }
+        if (gArgs.IsArgSet("-rpcbind")) {
+            LogPrintf("WARNING: option -rpcbind was ignored because -rpcallowip was not specified, refusing to allow everyone to connect\n");
+        }
+    } else if (gArgs.IsArgSet("-rpcbind")) { // Specific bind address
+        for (const std::string& strRPCBind : gArgs.GetArgs("-rpcbind")) {
+            uint16_t port{http_port};
+            std::string host;
+            SplitHostPort(strRPCBind, port, host);
+            endpoints.emplace_back(host, port);
+        }
+    }
+
+    // Bind addresses
+    for (std::vector<std::pair<std::string, uint16_t> >::iterator i = endpoints.begin(); i != endpoints.end(); ++i) {
+        LogPrintf("Binding RPC on address %s port %i\n", i->first, i->second);
+        const std::optional<CService> bind_addr{Lookup(i->first, i->second, /*fAllowLookup=*/false)};
+        if (i->first.empty() || (bind_addr.has_value() && bind_addr->IsBindAny())) {
+            LogPrintf("WARNING: the RPC server is not safe to expose to untrusted networks such as the public internet\n");
+        }
+
+        if (!BindListeningSocket(bind_addr.value())) {
+            LogPrintf("Binding RPC on address %s port %i failed.\n", i->first, i->second);
+        }
+    }
+    return !listeningSockets.empty();
+}
+
 bool InitHTTPServer_mz()
 {
-    // TODO: Will be a for loop to bind to mutiple -rpcbind values
-    if (!BindListeningSocket()) {
+    if (!HTTPBindAddresses()) {
         LogPrintf("Unable to bind any endpoint for RPC server\n");
         return false;
     }
