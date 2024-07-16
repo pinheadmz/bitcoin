@@ -4,6 +4,7 @@
 
 #include <config/bitcoin-config.h> // IWYU pragma: keep
 
+#include <http.h>
 #include <httpserver.h>
 
 #include <chainparamsbase.h>
@@ -44,7 +45,7 @@
 #include <support/events.h>
 
 /** Maximum size of http request (request line + headers) */
-static const size_t MAX_HEADERS_SIZE = 8192;
+// static const size_t MAX_HEADERS_SIZE = 8192;
 
 /** HTTP request work item */
 class HTTPWorkItem final : public HTTPClosure
@@ -435,36 +436,37 @@ bool InitHTTPServer(const util::SignalInterrupt& interrupt)
     if (!InitHTTPAllowList())
         return false;
 
-    // Redirect libevent's logging to our own log
-    event_set_log_callback(&libevent_log_cb);
-    // Update libevent's log handling.
-    UpdateHTTPServerLogging(LogInstance().WillLogCategory(BCLog::LIBEVENT));
 
-#ifdef WIN32
-    evthread_use_windows_threads();
-#else
-    evthread_use_pthreads();
-#endif
+//     // Redirect libevent's logging to our own log
+//     event_set_log_callback(&libevent_log_cb);
+//     // Update libevent's log handling.
+//     UpdateHTTPServerLogging(LogInstance().WillLogCategory(BCLog::LIBEVENT));
+
+// #ifdef WIN32
+//     evthread_use_windows_threads();
+// #else
+//     evthread_use_pthreads();
+// #endif
 
     raii_event_base base_ctr = obtain_event_base();
 
-    /* Create a new evhttp object to handle requests. */
-    raii_evhttp http_ctr = obtain_evhttp(base_ctr.get());
-    struct evhttp* http = http_ctr.get();
-    if (!http) {
-        LogPrintf("couldn't create evhttp. Exiting.\n");
-        return false;
-    }
+//     /* Create a new evhttp object to handle requests. */
+//     raii_evhttp http_ctr = obtain_evhttp(base_ctr.get());
+//     struct evhttp* http = http_ctr.get();
+//     if (!http) {
+//         LogPrintf("couldn't create evhttp. Exiting.\n");
+//         return false;
+//     }
 
-    evhttp_set_timeout(http, gArgs.GetIntArg("-rpcservertimeout", DEFAULT_HTTP_SERVER_TIMEOUT));
-    evhttp_set_max_headers_size(http, MAX_HEADERS_SIZE);
-    evhttp_set_max_body_size(http, MAX_SIZE);
-    evhttp_set_gencb(http, http_request_cb, (void*)&interrupt);
+//     evhttp_set_timeout(http, gArgs.GetIntArg("-rpcservertimeout", DEFAULT_HTTP_SERVER_TIMEOUT));
+//     evhttp_set_max_headers_size(http, MAX_HEADERS_SIZE);
+//     evhttp_set_max_body_size(http, MAX_SIZE);
+//     evhttp_set_gencb(http, http_request_cb, (void*)&interrupt);
 
-    if (!HTTPBindAddresses(http)) {
-        LogPrintf("Unable to bind any endpoint for RPC server\n");
-        return false;
-    }
+//     if (!HTTPBindAddresses(http)) {
+//         LogPrintf("Unable to bind any endpoint for RPC server\n");
+//         return false;
+//     }
 
     LogDebug(BCLog::HTTP, "Initialized HTTP server\n");
     int workQueueDepth = std::max((long)gArgs.GetIntArg("-rpcworkqueue", DEFAULT_HTTP_WORKQUEUE), 1L);
@@ -473,8 +475,10 @@ bool InitHTTPServer(const util::SignalInterrupt& interrupt)
     g_work_queue = std::make_unique<WorkQueue<HTTPClosure>>(workQueueDepth);
     // transfer ownership to eventBase/HTTP via .release()
     eventBase = base_ctr.release();
-    eventHTTP = http_ctr.release();
-    return true;
+//     eventHTTP = http_ctr.release();
+//     return true;
+
+    return InitHTTPServer_mz();
 }
 
 void UpdateHTTPServerLogging(bool enable) {
@@ -485,14 +489,15 @@ void UpdateHTTPServerLogging(bool enable) {
     }
 }
 
-static std::thread g_thread_http;
+// static std::thread g_thread_http;
 static std::vector<std::thread> g_thread_http_workers;
 
 void StartHTTPServer()
 {
     int rpcThreads = std::max((long)gArgs.GetIntArg("-rpcthreads", DEFAULT_HTTP_THREADS), 1L);
     LogInfo("Starting HTTP server with %d worker threads\n", rpcThreads);
-    g_thread_http = std::thread(ThreadHTTP, eventBase);
+    // g_thread_http = std::thread(ThreadHTTP, eventBase);
+    StartHTTPServer_mz();
 
     for (int i = 0; i < rpcThreads; i++) {
         g_thread_http_workers.emplace_back(HTTPWorkQueueRun, g_work_queue.get(), i);
@@ -521,33 +526,36 @@ void StopHTTPServer()
         }
         g_thread_http_workers.clear();
     }
-    // Unlisten sockets, these are what make the event loop running, which means
-    // that after this and all connections are closed the event loop will quit.
-    for (evhttp_bound_socket *socket : boundSockets) {
-        evhttp_del_accept_socket(eventHTTP, socket);
-    }
-    boundSockets.clear();
-    {
-        if (const auto n_connections{g_requests.CountActiveConnections()}; n_connections != 0) {
-            LogDebug(BCLog::HTTP, "Waiting for %d connections to stop HTTP server\n", n_connections);
-        }
-        g_requests.WaitUntilEmpty();
-    }
-    if (eventHTTP) {
-        // Schedule a callback to call evhttp_free in the event base thread, so
-        // that evhttp_free does not need to be called again after the handling
-        // of unfinished request connections that follows.
-        event_base_once(eventBase, -1, EV_TIMEOUT, [](evutil_socket_t, short, void*) {
-            evhttp_free(eventHTTP);
-            eventHTTP = nullptr;
-        }, nullptr, nullptr);
-    }
-    if (eventBase) {
-        LogDebug(BCLog::HTTP, "Waiting for HTTP event thread to exit\n");
-        if (g_thread_http.joinable()) g_thread_http.join();
-        event_base_free(eventBase);
-        eventBase = nullptr;
-    }
+
+    // // Unlisten sockets, these are what make the event loop running, which means
+    // // that after this and all connections are closed the event loop will quit.
+    // for (evhttp_bound_socket *socket : boundSockets) {
+    //     evhttp_del_accept_socket(eventHTTP, socket);
+    // }
+    // boundSockets.clear();
+    // {
+    //     if (const auto n_connections{g_requests.CountActiveConnections()}; n_connections != 0) {
+    //         LogDebug(BCLog::HTTP, "Waiting for %d connections to stop HTTP server\n", n_connections);
+    //     }
+    //     g_requests.WaitUntilEmpty();
+    // }
+    // if (eventHTTP) {
+    //     // Schedule a callback to call evhttp_free in the event base thread, so
+    //     // that evhttp_free does not need to be called again after the handling
+    //     // of unfinished request connections that follows.
+    //     event_base_once(eventBase, -1, EV_TIMEOUT, [](evutil_socket_t, short, void*) {
+    //         evhttp_free(eventHTTP);
+    //         eventHTTP = nullptr;
+    //     }, nullptr, nullptr);
+    // }
+    // if (eventBase) {
+    //     LogDebug(BCLog::HTTP, "Waiting for HTTP event thread to exit\n");
+    //     if (g_thread_http.joinable()) g_thread_http.join();
+    //     event_base_free(eventBase);
+    //     eventBase = nullptr;
+    // }
+
+    StopHTTPServer_mz();
     g_work_queue.reset();
     LogDebug(BCLog::HTTP, "Stopped HTTP server\n");
 }
