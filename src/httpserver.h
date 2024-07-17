@@ -10,6 +10,8 @@
 #include <span>
 #include <string>
 
+#include <http.h>
+
 namespace util {
 class SignalInterrupt;
 } // namespace util
@@ -56,17 +58,16 @@ void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch);
 struct event_base* EventBase();
 
 /** In-flight HTTP request.
- * Thin C++ wrapper around evhttp_request.
  */
 class HTTPRequest
 {
 private:
-    struct evhttp_request* req;
+    HTTPRequest_mz* req;
     const util::SignalInterrupt& m_interrupt;
     bool replySent;
 
 public:
-    explicit HTTPRequest(struct evhttp_request* req, const util::SignalInterrupt& interrupt, bool replySent = false);
+    explicit HTTPRequest(HTTPRequest_mz* req, const util::SignalInterrupt& interrupt, bool replySent = false);
     ~HTTPRequest();
 
     enum RequestMethod {
@@ -129,11 +130,11 @@ public:
      * @note Can be called only once. As this will give the request back to the
      * main thread, do not call any other HTTPRequest methods after calling this.
      */
-    void WriteReply(int nStatus, std::string_view reply = "")
+    void WriteReply(HTTPStatusCode status, std::string_view reply = "")
     {
-        WriteReply(nStatus, std::as_bytes(std::span{reply}));
+        WriteReply(status, std::as_bytes(std::span{reply}));
     }
-    void WriteReply(int nStatus, std::span<const std::byte> reply);
+    void WriteReply(HTTPStatusCode status, std::span<const std::byte> reply);
 };
 
 /** Get the query parameter value from request uri for a specified key, or std::nullopt if the key
@@ -148,7 +149,7 @@ public:
  * @param[in] uri is the entire request uri
  * @param[in] key represents the query parameter of which the value is returned
  */
-std::optional<std::string> GetQueryParameterFromUri(const char* uri, const std::string& key);
+std::optional<std::string> GetQueryParameterFromUri(std::string& uri, const std::string& key);
 
 /** Event handler closure.
  */

@@ -4,7 +4,6 @@
 
 #include <config/bitcoin-config.h> // IWYU pragma: keep
 
-#include <http.h>
 #include <httpserver.h>
 
 #include <chainparamsbase.h>
@@ -259,31 +258,8 @@ std::string RequestMethodString(HTTPRequest::RequestMethod m)
 }
 
 /** HTTP request callback */
-static void http_request_cb(struct evhttp_request* req, void* arg)
+static void http_request_cb(HTTPRequest_mz* req, void* arg)
 {
-    evhttp_connection* conn{evhttp_request_get_connection(req)};
-    // Track active requests
-    {
-        g_requests.AddRequest(req);
-        evhttp_request_set_on_complete_cb(req, [](struct evhttp_request* req, void*) {
-            g_requests.RemoveRequest(req);
-        }, nullptr);
-        evhttp_connection_set_closecb(conn, [](evhttp_connection* conn, void* arg) {
-            g_requests.RemoveConnection(conn);
-        }, nullptr);
-    }
-
-    // Disable reading to work around a libevent bug, fixed in 2.1.9
-    // See https://github.com/libevent/libevent/commit/5ff8eb26371c4dc56f384b2de35bea2d87814779
-    // and https://github.com/bitcoin/bitcoin/pull/11593.
-    if (event_get_version_number() >= 0x02010600 && event_get_version_number() < 0x02010900) {
-        if (conn) {
-            bufferevent* bev = evhttp_connection_get_bufferevent(conn);
-            if (bev) {
-                bufferevent_disable(bev, EV_READ);
-            }
-        }
-    }
     auto hreq{std::make_unique<HTTPRequest>(req, *static_cast<const util::SignalInterrupt*>(arg))};
 
     // Early address-based allow check
@@ -543,7 +519,7 @@ void HTTPEvent::trigger(struct timeval* tv)
     else
         evtimer_add(ev, tv); // trigger after timeval passed
 }
-HTTPRequest::HTTPRequest(struct evhttp_request* _req, const util::SignalInterrupt& interrupt, bool _replySent)
+HTTPRequest::HTTPRequest(HTTPRequest_mz* _req, const util::SignalInterrupt& interrupt, bool _replySent)
     : req(_req), m_interrupt(interrupt), replySent(_replySent)
 {
 }
@@ -560,40 +536,21 @@ HTTPRequest::~HTTPRequest()
 
 std::pair<bool, std::string> HTTPRequest::GetHeader(const std::string& hdr) const
 {
-    const struct evkeyvalq* headers = evhttp_request_get_input_headers(req);
-    assert(headers);
-    const char* val = evhttp_find_header(headers, hdr.c_str());
-    if (val)
-        return std::make_pair(true, val);
+    std::optional<std::string> result{req->headers.Find(hdr)};
+    if (result.has_value())
+        return std::make_pair(true, result.value());
     else
         return std::make_pair(false, "");
 }
 
 std::string HTTPRequest::ReadBody()
 {
-    struct evbuffer* buf = evhttp_request_get_input_buffer(req);
-    if (!buf)
-        return "";
-    size_t size = evbuffer_get_length(buf);
-    /** Trivial implementation: if this is ever a performance bottleneck,
-     * internal copying can be avoided in multi-segment buffers by using
-     * evbuffer_peek and an awkward loop. Though in that case, it'd be even
-     * better to not copy into an intermediate string but use a stream
-     * abstraction to consume the evbuffer on the fly in the parsing algorithm.
-     */
-    const char* data = (const char*)evbuffer_pullup(buf, size);
-    if (!data) // returns nullptr in case of empty buffer
-        return "";
-    std::string rv(data, size);
-    evbuffer_drain(buf, size);
-    return rv;
+    return req->body;
 }
 
 void HTTPRequest::WriteHeader(const std::string& hdr, const std::string& value)
 {
-    struct evkeyvalq* headers = evhttp_request_get_output_headers(req);
-    assert(headers);
-    evhttp_add_header(headers, hdr.c_str(), value.c_str());
+    req->response_headers.Write(hdr, value);
 }
 
 /** Closure sent to main thread to request a reply to be sent to
@@ -601,87 +558,53 @@ void HTTPRequest::WriteHeader(const std::string& hdr, const std::string& value)
  * Replies must be sent in the main loop in the main http thread,
  * this cannot be done from worker threads.
  */
-void HTTPRequest::WriteReply(int nStatus, std::span<const std::byte> reply)
+void HTTPRequest::WriteReply(HTTPStatusCode status, std::span<const std::byte> reply)
 {
     assert(!replySent && req);
     if (m_interrupt) {
         WriteHeader("Connection", "close");
     }
-    // Send event to main http thread to send reply message
-    struct evbuffer* evb = evhttp_request_get_output_buffer(req);
-    assert(evb);
-    evbuffer_add(evb, reply.data(), reply.size());
-    auto req_copy = req;
-    HTTPEvent* ev = new HTTPEvent(eventBase, true, [req_copy, nStatus]{
-        evhttp_send_reply(req_copy, nStatus, nullptr, nullptr);
-        // Re-enable reading from the socket. This is the second part of the libevent
-        // workaround above.
-        if (event_get_version_number() >= 0x02010600 && event_get_version_number() < 0x02010900) {
-            evhttp_connection* conn = evhttp_request_get_connection(req_copy);
-            if (conn) {
-                bufferevent* bev = evhttp_connection_get_bufferevent(conn);
-                if (bev) {
-                    bufferevent_enable(bev, EV_READ | EV_WRITE);
-                }
-            }
-        }
-    });
-    ev->trigger(nullptr);
+    req->WriteReply(status, reply);
     replySent = true;
     req = nullptr; // transferred back to main thread
 }
 
 CService HTTPRequest::GetPeer() const
 {
-    evhttp_connection* con = evhttp_request_get_connection(req);
     CService peer;
-    if (con) {
-        // evhttp retains ownership over returned address string
-        const char* address = "";
-        uint16_t port = 0;
-
-#ifdef HAVE_EVHTTP_CONNECTION_GET_PEER_CONST_CHAR
-        evhttp_connection_get_peer(con, &address, &port);
-#else
-        evhttp_connection_get_peer(con, (char**)&address, &port);
-#endif // HAVE_EVHTTP_CONNECTION_GET_PEER_CONST_CHAR
-
-        peer = MaybeFlipIPv6toCJDNS(LookupNumeric(address, port));
-    }
+    peer.SetSockAddr((struct sockaddr*)&req->client.sockaddr_client);
     return peer;
 }
 
 std::string HTTPRequest::GetURI() const
 {
-    return evhttp_request_get_uri(req);
+    return req->target;
 }
 
 HTTPRequest::RequestMethod HTTPRequest::GetRequestMethod() const
 {
-    switch (evhttp_request_get_command(req)) {
-    case EVHTTP_REQ_GET:
+    if (req->method == "GET") {
         return GET;
-    case EVHTTP_REQ_POST:
+    } else if (req->method == "POST") {
         return POST;
-    case EVHTTP_REQ_HEAD:
+    } else if (req->method == "HEAD") {
         return HEAD;
-    case EVHTTP_REQ_PUT:
+    } else if (req->method == "PUT") {
         return PUT;
-    default:
+    } else {
         return UNKNOWN;
     }
 }
 
 std::optional<std::string> HTTPRequest::GetQueryParameter(const std::string& key) const
 {
-    const char* uri{evhttp_request_get_uri(req)};
-
+    std::string uri{GetURI()};
     return GetQueryParameterFromUri(uri, key);
 }
 
-std::optional<std::string> GetQueryParameterFromUri(const char* uri, const std::string& key)
+std::optional<std::string> GetQueryParameterFromUri(std::string& uri, const std::string& key)
 {
-    evhttp_uri* uri_parsed{evhttp_uri_parse(uri)};
+    evhttp_uri* uri_parsed{evhttp_uri_parse(uri.c_str())};
     if (!uri_parsed) {
         throw std::runtime_error("URI parsing failed, it likely contained RFC 3986 invalid characters");
     }

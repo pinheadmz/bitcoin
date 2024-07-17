@@ -1,5 +1,8 @@
 // work in prorgress: minimal http server for bitcoind
 
+#ifndef BITCOIN_HTTP_H
+#define BITCOIN_HTTP_H
+
 #include <map>
 #include <util/sock.h>
 #include <util/string.h>
@@ -69,9 +72,9 @@ public:
     int status;
     std::string reason;
     HTTPHeaders headers;
-    std::string body;
+    std::vector<std::byte> body;
 
-    std::string Stringify() const;
+    std::string StringifyHeaders() const;
 };
 
 class HTTPRequest_mz
@@ -93,7 +96,8 @@ public:
     bool ReadHeaders(LineReader& reader);
     bool ReadBody(LineReader& reader);
 
-    void WriteReply(HTTPStatusCode status, const std::string& body = "");
+    HTTPHeaders response_headers;
+    void WriteReply(HTTPStatusCode status, std::span<const std::byte> body);
 };
 
 // Represents an external client
@@ -103,8 +107,10 @@ class HTTPClient
 {
 public:
     std::shared_ptr<Sock> sock;
+    struct sockaddr_storage sockaddr_client;
+    // TODO should also be std::byte
     std::vector<uint8_t> recvBuffer{};
-    std::vector<uint8_t> sendBuffer{};
+    std::vector<std::byte> sendBuffer{};
     std::deque<HTTPRequest_mz> requests;
     std::deque<HTTPResponse_mz> responses;
 
@@ -113,7 +119,7 @@ public:
     // Indicates a non-keep-alive connection with a finished response in sendBuffer
     bool disconnect_after_send{false};
 
-    explicit HTTPClient(std::shared_ptr<Sock> sockIn) : sock(std::move(sockIn)) {}
+    explicit HTTPClient(std::shared_ptr<Sock> sockIn, struct sockaddr_storage sockaddrIn) : sock(std::move(sockIn)), sockaddr_client(sockaddrIn){}
 
     // Try to read an HTTP request from recvBuffer
     bool ReadRequest();
@@ -123,3 +129,5 @@ bool ParseRequest(HTTPRequest_mz* req);
 bool InitHTTPServer_mz();
 void StartHTTPServer_mz();
 void StopHTTPServer_mz();
+
+#endif // BITCOIN_HTTP_H

@@ -179,7 +179,7 @@ bool HTTPRequest_mz::ReadBody(LineReader& reader)
     return true;
 }
 
-void HTTPRequest_mz::WriteReply(HTTPStatusCode status, const std::string& body)
+void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte> body)
 {
     HTTPResponse_mz res;
 
@@ -191,7 +191,8 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, const std::string& body)
     res.status = status;
     res.reason = HTTPReason.find(status)->second;
 
-    // Add headers
+    // Copy in headers from request processing
+    res.headers = response_headers;
     // see libevent evhttp_make_header_response()
     if (version_major == 1) {
         // TODO: HTTP/1.0 keep-alive
@@ -201,7 +202,7 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, const std::string& body)
             res.headers.Write("Date", FormatRFC7231DateTime(now_seconds));
 
             if (!body.empty()) {
-                res.headers.Write("Content-Length", std::to_string(body.length()));
+                res.headers.Write("Content-Length", std::to_string(body.size()));
             }
         }
     }
@@ -213,16 +214,18 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, const std::string& body)
 
     // TODO Connection: close
 
-    // Add body
-    res.body = body;
+    // We've been using std::span up until now but it is finally time to copy
+    // data. The original data will go out of scope when WriteReply() returns.
+    // This is analogous to the memcpy() in libevent's evbuffer_add()
+    res.body.insert(res.body.end(), body.begin(), body.end());
 
     // Add to outgoing queue
     client.responses.push_front(std::move(res));
 }
 
-std::string HTTPResponse_mz::Stringify() const
+std::string HTTPResponse_mz::StringifyHeaders() const
 {
-    return strprintf("HTTP/%d.%d %d %s\r\n%s%s", version_major, version_minor, status, reason, headers.Stringify(), body);
+    return strprintf("HTTP/%d.%d %d %s\r\n%s%s", version_major, version_minor, status, reason, headers.Stringify());
 }
 
 bool HTTPClient::ReadRequest()
@@ -376,10 +379,15 @@ static void HandleConnections()
             while (client.responses.size() > 0) {
                 const HTTPResponse_mz res = client.responses.back();
                 client.responses.pop_back();
-                // Format response packet
-                std::string reply{res.Stringify()};
-                // Load into send buffer
-                client.sendBuffer.insert(client.sendBuffer.end(), reply.begin(), reply.end());
+                // Format response packet headers
+                std::string reply_headers{res.StringifyHeaders()};
+                // Load headers into send buffer
+                client.sendBuffer.insert(
+                    client.sendBuffer.end(),
+                    reinterpret_cast<const std::byte*>(reply_headers.data()),
+                    reinterpret_cast<const std::byte*>(reply_headers.data() + reply_headers.size()));
+                // Load response body into send buffer
+                client.sendBuffer.insert(client.sendBuffer.end(), res.body.begin(), res.body.end());
                 // TODO: handle keep-alive header
                 client.disconnect_after_send = true;
             }
@@ -454,7 +462,7 @@ static void AcceptConnections()
         socklen_t len_client = sizeof(sockaddr);
         std::shared_ptr<Sock> sock_client{listeningSocket->Accept((struct sockaddr*)&sockaddr_client, &len_client)};
         if (sock_client) {
-            connectedClients.push_back(HTTPClient(sock_client));
+            connectedClients.push_back(HTTPClient(sock_client, sockaddr_client));
         }
     }
 }
@@ -487,7 +495,8 @@ static void ThreadHTTP_mz()
                 LogPrintf("Sending test response\n");
                 auto req = client.requests.back();
                 client.requests.pop_back();
-                req.WriteReply(HTTP_OK, "Test response!\n");
+                std::string res{"Test response!\n"};
+                req.WriteReply(HTTP_OK, std::as_bytes(std::span{res}));
             }
         }
 
