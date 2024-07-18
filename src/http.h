@@ -71,8 +71,10 @@ public:
     int version_minor;
     int status;
     std::string reason;
-    HTTPHeaders headers;
+    HTTPHeaders* headers;
     std::vector<std::byte> body;
+
+    explicit HTTPResponse_mz(HTTPHeaders* headersIn) : headers(headersIn) {}
 
     std::string StringifyHeaders() const;
 };
@@ -86,8 +88,8 @@ public:
     int version_minor;
     HTTPHeaders headers;
     std::string body;
-    HTTPClient& client;
-    explicit HTTPRequest_mz(HTTPClient& httpclient) : client(httpclient) {}
+    HTTPClient* client;
+    explicit HTTPRequest_mz(HTTPClient* httpclient) : client(httpclient) {}
 
     // Readers return false if they need more data from the
     // socket to parse properly. They throw errors if
@@ -111,7 +113,7 @@ public:
     // TODO should also be std::byte
     std::vector<uint8_t> recvBuffer{};
     std::vector<std::byte> sendBuffer{};
-    std::deque<HTTPRequest_mz> requests;
+    std::deque<std::shared_ptr<HTTPRequest_mz>> requests;
     std::deque<HTTPResponse_mz> responses;
 
     // When true, client is destroyed and socket disconnected immediately on next loop
@@ -125,8 +127,8 @@ public:
     bool ReadRequest();
 };
 
-bool ParseRequest(HTTPRequest_mz* req);
-bool InitHTTPServer_mz();
+void SetHTTPCallback(std::function<void(std::shared_ptr<HTTPRequest_mz>, void*)> http_callback);
+bool InitHTTPServer_mz(void* http_callback_arg);
 void StartHTTPServer_mz();
 void StopHTTPServer_mz();
 

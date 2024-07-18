@@ -62,12 +62,12 @@ struct event_base* EventBase();
 class HTTPRequest
 {
 private:
-    HTTPRequest_mz* req;
+    std::shared_ptr<HTTPRequest_mz> req;
     const util::SignalInterrupt& m_interrupt;
     bool replySent;
 
 public:
-    explicit HTTPRequest(HTTPRequest_mz* req, const util::SignalInterrupt& interrupt, bool replySent = false);
+    explicit HTTPRequest(std::shared_ptr<HTTPRequest_mz> req, const util::SignalInterrupt& interrupt, bool replySent = false);
     ~HTTPRequest();
 
     enum RequestMethod {

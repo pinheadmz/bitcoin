@@ -245,6 +245,15 @@ std::string format(util::ConstevalFormatString<sizeof...(Args)> fmt, const Args&
 
 struct CaseInsensitiveComparator {
     bool operator()(const std::string& s1, const std::string& s2) const {
+        // Handle empty strings as a special case
+        if (s1.empty() && s2.empty()) {
+            return false;
+        } else if (s1.empty()) {
+            return true;
+        } else if (s2.empty()) {
+            return false;
+        }
+        
         return std::lexicographical_compare(
             s1.begin(), s1.end(),
             s2.begin(), s2.end(),

@@ -258,7 +258,7 @@ std::string RequestMethodString(HTTPRequest::RequestMethod m)
 }
 
 /** HTTP request callback */
-static void http_request_cb(HTTPRequest_mz* req, void* arg)
+static void http_request_cb(std::shared_ptr<HTTPRequest_mz> req, void* arg)
 {
     auto hreq{std::make_unique<HTTPRequest>(req, *static_cast<const util::SignalInterrupt*>(arg))};
 
@@ -406,7 +406,8 @@ bool InitHTTPServer(const util::SignalInterrupt& interrupt)
 //     eventHTTP = http_ctr.release();
 //     return true;
 
-    return InitHTTPServer_mz();
+    SetHTTPCallback(http_request_cb);
+    return InitHTTPServer_mz((void*)&interrupt);
 }
 
 void UpdateHTTPServerLogging(bool enable) {
@@ -519,7 +520,7 @@ void HTTPEvent::trigger(struct timeval* tv)
     else
         evtimer_add(ev, tv); // trigger after timeval passed
 }
-HTTPRequest::HTTPRequest(HTTPRequest_mz* _req, const util::SignalInterrupt& interrupt, bool _replySent)
+HTTPRequest::HTTPRequest(std::shared_ptr<HTTPRequest_mz> _req, const util::SignalInterrupt& interrupt, bool _replySent)
     : req(_req), m_interrupt(interrupt), replySent(_replySent)
 {
 }
@@ -572,7 +573,7 @@ void HTTPRequest::WriteReply(HTTPStatusCode status, std::span<const std::byte> r
 CService HTTPRequest::GetPeer() const
 {
     CService peer;
-    peer.SetSockAddr((struct sockaddr*)&req->client.sockaddr_client);
+    peer.SetSockAddr((struct sockaddr*)&req->client->sockaddr_client);
     return peer;
 }
 

@@ -31,6 +31,10 @@ static std::vector<std::shared_ptr<Sock>> listeningSockets;
 //! Connected clients with live HTTP connections
 static std::vector<HTTPClient> connectedClients;
 
+//! Callback function to execute HTTP requests
+static void* g_http_callback_arg;
+static std::function<void(std::shared_ptr<HTTPRequest_mz>, void*)> g_http_callback;
+
 
 // TODO: could go in string.h?
 struct LineReader
@@ -181,7 +185,7 @@ bool HTTPRequest_mz::ReadBody(LineReader& reader)
 
 void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte> body)
 {
-    HTTPResponse_mz res;
+    HTTPResponse_mz res(&response_headers);
 
     // Response version matches request version
     res.version_major = version_major;
@@ -191,25 +195,23 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
     res.status = status;
     res.reason = HTTPReason.find(status)->second;
 
-    // Copy in headers from request processing
-    res.headers = response_headers;
     // see libevent evhttp_make_header_response()
     if (version_major == 1) {
         // TODO: HTTP/1.0 keep-alive
 
         if (version_minor >= 1) {
             const int64_t now_seconds{TicksSinceEpoch<std::chrono::seconds>(SystemClock::now())};
-            res.headers.Write("Date", FormatRFC7231DateTime(now_seconds));
+            response_headers.Write("Date", FormatRFC7231DateTime(now_seconds));
 
             if (!body.empty()) {
-                res.headers.Write("Content-Length", std::to_string(body.size()));
+                response_headers.Write("Content-Length", std::to_string(body.size()));
             }
         }
     }
 
-    if (!body.empty() && !res.headers.Find("Content-Type")) {
+    if (!body.empty() && !response_headers.Find("Content-Type")) {
         // Default type from libevent evhttp_new_object()
-        res.headers.Write("Content-Type", "text/html; charset=ISO-8859-1");
+        response_headers.Write("Content-Type", "text/html; charset=ISO-8859-1");
     }
 
     // TODO Connection: close
@@ -220,23 +222,23 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
     res.body.insert(res.body.end(), body.begin(), body.end());
 
     // Add to outgoing queue
-    client.responses.push_front(std::move(res));
+    client->responses.push_front(std::move(res));
 }
 
 std::string HTTPResponse_mz::StringifyHeaders() const
 {
-    return strprintf("HTTP/%d.%d %d %s\r\n%s%s", version_major, version_minor, status, reason, headers.Stringify());
+    return strprintf("HTTP/%d.%d %d %s\r\n%s%s", version_major, version_minor, status, reason, headers->Stringify());
 }
 
 bool HTTPClient::ReadRequest()
 {
     // Create a new request object and try to fill it with data from recvBuffer
-    HTTPRequest_mz req(*this);
+    auto req = std::make_shared<HTTPRequest_mz>(this);
     LineReader reader(recvBuffer);
 
-    if (!req.ReadControlData(reader)) return false;
-    if (!req.ReadHeaders(reader)) return false;
-    if (!req.ReadBody(reader)) return false;
+    if (!req->ReadControlData(reader)) return false;
+    if (!req->ReadHeaders(reader)) return false;
+    if (!req->ReadBody(reader)) return false;
 
     // Move the request into the queue
     requests.push_front(req);
@@ -247,6 +249,9 @@ bool HTTPClient::ReadRequest()
     //       OR the caller should know we have a full buffer
     //       but not valid request and drop the client?
     recvBuffer.erase(reader.start, reader.it);
+
+    // Process request
+    g_http_callback(req, g_http_callback_arg);
 
     return true;
 }
@@ -322,12 +327,19 @@ static bool HTTPBindAddresses()
     return !listeningSockets.empty();
 }
 
-bool InitHTTPServer_mz()
+void SetHTTPCallback(std::function<void(std::shared_ptr<HTTPRequest_mz>, void*)> http_callback)
+{
+    g_http_callback = http_callback;
+}
+
+bool InitHTTPServer_mz(void* http_callback_arg)
 {
     if (!HTTPBindAddresses()) {
         LogPrintf("Unable to bind any endpoint for RPC server\n");
         return false;
     }
+
+    g_http_callback_arg = http_callback_arg;
 
     LogPrintf("Initialized HTTP_mz server\n");
     return true;
@@ -488,18 +500,6 @@ static void ThreadHTTP_mz()
         HandleConnections();
         AcceptConnections();
         DropConnections();
-
-        // TODO: temp for testing
-        for (auto& client : connectedClients) {
-            while (client.requests.size() > 0) {
-                LogPrintf("Sending test response\n");
-                auto req = client.requests.back();
-                client.requests.pop_back();
-                std::string res{"Test response!\n"};
-                req.WriteReply(HTTP_OK, std::as_bytes(std::span{res}));
-            }
-        }
-
     }
 
     LogPrintf("Exited http_mz loop\n");
