@@ -97,6 +97,11 @@ void HTTPHeaders::Write(const std::string key, const std::string value)
     }
 }
 
+void HTTPHeaders::Remove(const std::string key)
+{
+    map.erase(key);
+}
+
 bool HTTPHeaders::Read(LineReader& reader)
 {
     // Headers https://httpwg.org/specs/rfc9110.html#rfc.section.6.3
@@ -197,7 +202,14 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
 
     // see libevent evhttp_make_header_response()
     if (version_major == 1) {
-        // TODO: HTTP/1.0 keep-alive
+
+        if (version_minor == 0) {
+            auto connection_header{headers.Find("Connection")};
+            if (connection_header && connection_header.value() == "keep-alive") {
+                response_headers.Write("Connection", "keep-alive");
+                res.keep_alive = true;
+            }
+        }
 
         if (version_minor >= 1) {
             const int64_t now_seconds{TicksSinceEpoch<std::chrono::seconds>(SystemClock::now())};
@@ -206,6 +218,9 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
             if (!body.empty()) {
                 response_headers.Write("Content-Length", std::to_string(body.size()));
             }
+
+            // Default for HTTP 1.1
+            res.keep_alive = true;
         }
     }
 
@@ -214,7 +229,12 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
         response_headers.Write("Content-Type", "text/html; charset=ISO-8859-1");
     }
 
-    // TODO Connection: close
+    auto connection_header{headers.Find("Connection")};
+    if (connection_header && connection_header.value() == "close") {
+        response_headers.Remove("Connection");
+        response_headers.Write("Connection", "close");
+        res.keep_alive = false;
+    }
 
     // We've been using std::span up until now but it is finally time to copy
     // data. The original data will go out of scope when WriteReply() returns.
@@ -400,8 +420,9 @@ static void HandleConnections()
                     reinterpret_cast<const std::byte*>(reply_headers.data() + reply_headers.size()));
                 // Load response body into send buffer
                 client.sendBuffer.insert(client.sendBuffer.end(), res.body.begin(), res.body.end());
-                // TODO: handle keep-alive header
-                client.disconnect_after_send = true;
+                if (!res.keep_alive) {
+                    client.disconnect_after_send = true;
+                }
             }
 
             // Send everything we can

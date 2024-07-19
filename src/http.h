@@ -57,6 +57,7 @@ class HTTPHeaders
 public:
     std::optional<std::string> Find(const std::string key) const;
     void Write(const std::string key, const std::string value);
+    void Remove(const std::string key);
     bool Read(LineReader& reader);
     std::string Stringify() const;
 
@@ -73,6 +74,7 @@ public:
     std::string reason;
     HTTPHeaders* headers;
     std::vector<std::byte> body;
+    bool keep_alive{false};
 
     explicit HTTPResponse_mz(HTTPHeaders* headersIn) : headers(headersIn) {}
 
