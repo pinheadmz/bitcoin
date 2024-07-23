@@ -203,6 +203,9 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
     res.status = status;
     res.reason = HTTPReason.find(status)->second;
 
+    // see libevent evhttp_response_needs_body()
+    bool needs_body{status != HTTP_NO_CONTENT && (status < 100 || status >= 200)};
+
     // see libevent evhttp_make_header_response()
     if (version_major == 1) {
 
@@ -218,7 +221,7 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
             const int64_t now_seconds{TicksSinceEpoch<std::chrono::seconds>(SystemClock::now())};
             response_headers.Write("Date", FormatRFC7231DateTime(now_seconds));
 
-            if (!body.empty()) {
+            if (needs_body) {
                 response_headers.Write("Content-Length", std::to_string(body.size()));
             }
 
@@ -227,7 +230,7 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
         }
     }
 
-    if (!body.empty() && !response_headers.Find("Content-Type")) {
+    if (needs_body && !response_headers.Find("Content-Type")) {
         // Default type from libevent evhttp_new_object()
         response_headers.Write("Content-Type", "text/html; charset=ISO-8859-1");
     }
