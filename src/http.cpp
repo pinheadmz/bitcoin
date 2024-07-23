@@ -296,6 +296,13 @@ static bool BindListeningSocket(const CService& addrBind)
         return false;
     }
 
+    // Allow binding if the port is still in TIME_WAIT state after
+    // the program was closed and restarted.
+    int nOne = 1;
+    if (sock->SetSockOpt(SOL_SOCKET, SO_REUSEADDR, (sockopt_arg_type)&nOne, sizeof(int)) == SOCKET_ERROR) {
+        LogPrintf("Could not set SO_REUSEADDR on HTTP socket: %s, continuing anyway"), NetworkErrorString(WSAGetLastError());
+    }
+
     if (sock->Bind(reinterpret_cast<struct sockaddr*>(&sockaddr), len) == SOCKET_ERROR) {
         LogPrintf("Could not bind to socket for http: %s\n", NetworkErrorString(WSAGetLastError()));
         return false;
