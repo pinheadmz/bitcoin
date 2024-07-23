@@ -488,7 +488,7 @@ static void HandleConnections()
                     // Move the incomplete request object into the client's request queue
                     // anyway because the error reponse we are about to send refers to it
                     client.requests.push_front(req);
-                    req->WriteReply(HTTP_BAD_REQUEST);
+                    req->WriteReply(HTTP_BAD_REQUEST, {});
 
                     client.disconnect_after_send = true;
                     break;
@@ -543,6 +543,9 @@ static void ThreadHTTP_mz()
         DropConnections();
     }
 
+    LogPrintf("Clearing bound sockets...\n");
+    connectedClients.clear();
+    listeningSockets.clear();
     LogPrintf("Exited http_mz loop\n");
 }
 
