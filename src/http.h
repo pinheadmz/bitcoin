@@ -126,7 +126,7 @@ public:
     explicit HTTPClient(std::shared_ptr<Sock> sockIn, struct sockaddr_storage sockaddrIn) : sock(std::move(sockIn)), sockaddr_client(sockaddrIn){}
 
     // Try to read an HTTP request from recvBuffer
-    bool ReadRequest();
+    bool ReadRequest(std::shared_ptr<HTTPRequest_mz> req);
 };
 
 void SetHTTPCallback(std::function<void(std::shared_ptr<HTTPRequest_mz>, void*)> http_callback);

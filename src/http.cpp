@@ -250,10 +250,8 @@ std::string HTTPResponse_mz::StringifyHeaders() const
     return strprintf("HTTP/%d.%d %d %s\r\n%s%s", version_major, version_minor, status, reason, headers->Stringify());
 }
 
-bool HTTPClient::ReadRequest()
+bool HTTPClient::ReadRequest(std::shared_ptr<HTTPRequest_mz> req)
 {
-    // Create a new request object and try to fill it with data from recvBuffer
-    auto req = std::make_shared<HTTPRequest_mz>(this);
     LineReader reader(recvBuffer);
 
     if (!req->ReadControlData(reader)) return false;
@@ -269,9 +267,6 @@ bool HTTPClient::ReadRequest()
     //       OR the caller should know we have a full buffer
     //       but not valid request and drop the client?
     recvBuffer.erase(reader.start, reader.it);
-
-    // Process request
-    g_http_callback(req, g_http_callback_arg);
 
     return true;
 }
@@ -470,17 +465,26 @@ static void HandleConnections()
             // Trim unused buffer memory
             client.recvBuffer.resize(current_size + bytes_received);
 
-            // Try reading HTTP requests from the buffer
+            // Try reading (potentially multiple) HTTP requests from the buffer
             while (client.recvBuffer.size() > 0) {
+                // Create a new request object and try to fill it with data from recvBuffer
+                auto req = std::make_shared<HTTPRequest_mz>(&client);
                 try {
-                    // Stop reading if we need more data from the client
-                    if (!client.ReadRequest()) break;
+                    // Stop reading if we need more data from the client to complete the request
+                    if (!client.ReadRequest(req)) break;
                 } catch (const std::runtime_error& e) {
                     LogPrintf("ReadRequest() error: %s\n", e.what());
                     // TODO: send 400 bad request before disconnecting
                     client.disconnect = true;
                     break;
                 }
+
+                // We read a complete request from the buffer
+                // Move the request into the client's request queue
+                client.requests.push_front(req);
+
+                // Process request
+                g_http_callback(req, g_http_callback_arg);
             }
         }
     }
