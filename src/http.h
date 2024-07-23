@@ -86,8 +86,9 @@ class HTTPRequest_mz
 public:
     std::string method;
     std::string target;
-    int version_major;
-    int version_minor;
+    // Default protocol version is used by error responses to unreadable requests
+    int version_major{1};
+    int version_minor{1};
     HTTPHeaders headers;
     std::string body;
     HTTPClient* client;

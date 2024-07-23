@@ -39,12 +39,13 @@ static std::function<void(std::shared_ptr<HTTPRequest_mz>, void*)> g_http_callba
 // TODO: could go in string.h?
 struct LineReader
 {
-    std::vector<uint8_t>::iterator start;
+    const std::vector<uint8_t>::iterator start;
     std::vector<uint8_t>::iterator it;
-    std::vector<uint8_t>::iterator end;
+    const std::vector<uint8_t>::iterator end;
+    const size_t max_read;
 
-    explicit LineReader(std::vector<uint8_t>& buffer)
-        : start(buffer.begin()), it(buffer.begin()), end(buffer.end()) {}
+    explicit LineReader(std::vector<uint8_t>& buffer, size_t max_read)
+        : start(buffer.begin()), it(buffer.begin()), end(buffer.end()), max_read(max_read) {}
 
     std::optional<std::string> ReadLine()
     {
@@ -58,6 +59,7 @@ struct LineReader
             line += c;
             ++it;
             if (c == '\n') break;
+            if ((size_t)std::distance(start, it) >= max_read) throw std::runtime_error("max_read exceeded by LineReader");
         }
 
         line = TrimString(line); // delete trailing \r and/or \n
@@ -69,9 +71,10 @@ struct LineReader
         return std::distance(it, end);
     }
 
+    // Ignores max_read but won't overflow
     std::string ReadLength(size_t len)
     {
-        if (Left() < len) throw std::out_of_range("Not enough data in buffer");
+        if (Left() < len) throw std::runtime_error("Not enough data in buffer");
         std::string out(it, it + len);
         it += len;
         return out;
@@ -243,6 +246,8 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
 
     // Add to outgoing queue
     client->responses.push_front(std::move(res));
+
+    LogPrintf("HTTP Response added to client queue with status code %d\n", status);
 }
 
 std::string HTTPResponse_mz::StringifyHeaders() const
@@ -252,7 +257,7 @@ std::string HTTPResponse_mz::StringifyHeaders() const
 
 bool HTTPClient::ReadRequest(std::shared_ptr<HTTPRequest_mz> req)
 {
-    LineReader reader(recvBuffer);
+    LineReader reader(recvBuffer, MAX_HEADERS_SIZE);
 
     if (!req->ReadControlData(reader)) return false;
     if (!req->ReadHeaders(reader)) return false;
@@ -422,17 +427,20 @@ static void HandleConnections()
 
             // Send everything we can
             size_t res_length{client.sendBuffer.size()};
-            ssize_t bytes_sent = client.sock->Send(client.sendBuffer.data(), res_length, 0);
+            if (res_length > 0) {
+                ssize_t bytes_sent = client.sock->Send(client.sendBuffer.data(), res_length, 0);
 
-            // Error sending through socket
-            if (bytes_sent < 0) {
-                LogPrintf("Failed send to client (disconnecting): %s\n", NetworkErrorString(WSAGetLastError()));
-                client.disconnect = true;
-                continue;
+                // Error sending through socket
+                if (bytes_sent < 0) {
+                    LogPrintf("Failed send to client (disconnecting): %s\n", NetworkErrorString(WSAGetLastError()));
+                    client.disconnect = true;
+                    continue;
+                }
+
+                LogPrintf("Sent %d bytes to client\n", bytes_sent);
+                // Remove sent bytes from the buffer
+                client.sendBuffer.erase(client.sendBuffer.begin(), client.sendBuffer.begin() + bytes_sent);
             }
-
-            // Remove sent bytes from the buffer
-            client.sendBuffer.erase(client.sendBuffer.begin(), client.sendBuffer.begin() + bytes_sent);
         }
 
         // Do not attempt to receive bytes if the send buffer is not drained
@@ -448,6 +456,7 @@ static void HandleConnections()
 
             // Read data from socket into the receive buffer
             ssize_t bytes_received = client.sock->Recv(client.recvBuffer.data() + current_size, additional_size, MSG_DONTWAIT);
+            LogPrintf("Received %d bytes from client\n", bytes_received);
 
             // Socket closed gracefully
             if (bytes_received == 0) {
@@ -474,11 +483,18 @@ static void HandleConnections()
                     if (!client.ReadRequest(req)) break;
                 } catch (const std::runtime_error& e) {
                     LogPrintf("ReadRequest() error: %s\n", e.what());
-                    // TODO: send 400 bad request before disconnecting
-                    client.disconnect = true;
+                    
+                    // We failed to read a complete request from the buffer
+                    // Move the incomplete request object into the client's request queue
+                    // anyway because the error reponse we are about to send refers to it
+                    client.requests.push_front(req);
+                    req->WriteReply(HTTP_BAD_REQUEST);
+
+                    client.disconnect_after_send = true;
                     break;
                 }
 
+                LogPrintf("Read HTTP request\n");;
                 // We read a complete request from the buffer
                 // Move the request into the client's request queue
                 client.requests.push_front(req);
@@ -507,7 +523,7 @@ static void AcceptConnections()
 static void DropConnections()
 {
    for (auto it = connectedClients.begin(); it != connectedClients.end();) {
-        if (it->disconnect || (it->disconnect_after_send && it->sendBuffer.size() == 0)) {
+        if (it->disconnect || (it->disconnect_after_send && it->sendBuffer.size() == 0 && it->responses.size() == 0)) {
             LogPrintf("removing client\n");
             it = connectedClients.erase(it);
         } else {
