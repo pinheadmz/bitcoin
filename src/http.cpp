@@ -296,12 +296,21 @@ static bool BindListeningSocket(const CService& addrBind)
         return false;
     }
 
-    // Allow binding if the port is still in TIME_WAIT state after
-    // the program was closed and restarted.
+    // Allow binding if the port is still in TIME_WAIT state after the program was closed and restarted.
     int nOne = 1;
     if (sock->SetSockOpt(SOL_SOCKET, SO_REUSEADDR, (sockopt_arg_type)&nOne, sizeof(int)) == SOCKET_ERROR) {
         LogPrintf("Could not set SO_REUSEADDR on HTTP socket: %s, continuing anyway"), NetworkErrorString(WSAGetLastError());
     }
+
+    // Detect dead connections with periodic pings.
+    if (sock->SetSockOpt(SOL_SOCKET, SO_KEEPALIVE, (sockopt_arg_type)&nOne, sizeof(int)) == SOCKET_ERROR) {
+        LogPrintf("Could not set SO_KEEPALIVE on HTTP socket: %s, continuing anyway"), NetworkErrorString(WSAGetLastError());
+    }
+
+
+    // TODO: see libevent evconnlistener_new_bind()
+    //
+
 
     if (sock->Bind(reinterpret_cast<struct sockaddr*>(&sockaddr), len) == SOCKET_ERROR) {
         LogPrintf("Could not bind to socket for http: %s\n", NetworkErrorString(WSAGetLastError()));
@@ -466,10 +475,9 @@ static void HandleConnections()
 
             // Read data from socket into the receive buffer
             ssize_t bytes_received = client.sock->Recv(client.recvBuffer.data() + current_size, additional_size, MSG_DONTWAIT);
-            LogPrintf("Received %d bytes from client\n", bytes_received);
 
-            // Socket closed gracefully
             if (bytes_received == 0) {
+                LogPrintf("Socket closed gracefully\n");
                 client.disconnect = true;
                 continue;
             }
@@ -480,6 +488,8 @@ static void HandleConnections()
                 client.disconnect = true;
                 continue;
             }
+
+            LogPrintf("Received %d bytes from client\n", bytes_received);
 
             // Trim unused buffer memory
             client.recvBuffer.resize(current_size + bytes_received);
@@ -553,9 +563,18 @@ static void ThreadHTTP_mz()
         DropConnections();
     }
 
-    LogPrintf("Clearing bound sockets...\n");
-    connectedClients.clear();
+    LogPrintf("Clearing listening sockets...\n");
     listeningSockets.clear();
+
+    LogPrintf("Flushing all connected clients...\n");
+    for (auto& client : connectedClients) {
+        client.disconnect_after_send = true;
+    }
+    while (connectedClients.size() > 0) {
+        HandleConnections();
+        DropConnections();
+    }
+
     LogPrintf("Exited http_mz loop\n");
 }
 
