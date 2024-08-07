@@ -3,6 +3,7 @@
 #ifndef BITCOIN_HTTP_H
 #define BITCOIN_HTTP_H
 
+#include <deque>
 #include <map>
 #include <util/sock.h>
 #include <util/string.h>
