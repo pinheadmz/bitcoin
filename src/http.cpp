@@ -396,11 +396,13 @@ static Sock::EventsPerSock GenerateEventsPerSock()
     }
 
     // We want to either read requests or send replies to connected sockets
-    // TODO: don't set SEND unless we have a response actually ready
-    //       or if theres leftover bytes in client.sendBuffer
-    //       maybe don't set RECV if we are pausing this socket due to flooding (max requests in queue?)
+    // TODO: maybe don't set RECV if we are pausing this socket due to flooding (max requests in queue?)
     for (const HTTPClient& connectedClient : connectedClients) {
-        events_per_sock.emplace(connectedClient.sock, Sock::Events{Sock::SEND | Sock::RECV});
+        Sock::Events events{Sock::RECV};
+        if (connectedClient.sendBuffer.size() > 0 || connectedClient.responses.size() > 0) {
+            events.requested |= Sock::SEND;
+        }
+        events_per_sock.emplace(connectedClient.sock, events);
     }
 
     return events_per_sock;
