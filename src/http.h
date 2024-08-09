@@ -5,6 +5,8 @@
 
 #include <deque>
 #include <map>
+#include <logging.h>
+#include <netaddress.h>
 #include <util/sock.h>
 #include <util/string.h>
 
@@ -114,6 +116,7 @@ class HTTPClient
 public:
     std::shared_ptr<Sock> sock;
     struct sockaddr_storage sockaddr_client;
+    std::string origin;
     // TODO should also be std::byte
     std::vector<uint8_t> recvBuffer{};
     std::vector<std::byte> sendBuffer{};
@@ -125,7 +128,13 @@ public:
     // Indicates a non-keep-alive connection with a finished response in sendBuffer
     bool disconnect_after_send{false};
 
-    explicit HTTPClient(std::shared_ptr<Sock> sockIn, struct sockaddr_storage sockaddrIn) : sock(std::move(sockIn)), sockaddr_client(sockaddrIn){}
+    explicit HTTPClient(std::shared_ptr<Sock> sockIn, struct sockaddr_storage sockaddrIn) : sock(std::move(sockIn)), sockaddr_client(sockaddrIn)
+    {
+        CService addr;
+        addr.SetSockAddr((const struct sockaddr*)&sockaddrIn);
+        origin = addr.ToStringAddrPort();
+        LogPrintf("Created HTTPClient with origin: %s\n", origin);
+    }
 
     // Try to read an HTTP request from recvBuffer
     bool ReadRequest(std::shared_ptr<HTTPRequest_mz> req);

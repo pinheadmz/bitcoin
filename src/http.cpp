@@ -250,7 +250,7 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
     // Add to outgoing queue
     client->responses.push_front(std::move(res));
 
-    LogPrintf("HTTP Response added to client queue with status code %d\n", status);
+    LogPrintf("[client: %s] HTTP Response added to client queue with status code %d\n", client->origin, status);
 }
 
 std::string HTTPResponse_mz::StringifyHeaders() const
@@ -428,6 +428,7 @@ static void HandleConnections()
 
         // Socket is ready to send
         if (it->second.occurred & Sock::SEND) {
+            LogPrintf("[client: %s] ready to send...\n", client.origin);
             // Prepare HTTP responses for the wire
             while (client.responses.size() > 0) {
                 const HTTPResponse_mz res = client.responses.back();
@@ -453,12 +454,12 @@ static void HandleConnections()
 
                 // Error sending through socket
                 if (bytes_sent < 0) {
-                    LogPrintf("Failed send to client (disconnecting): %s\n", NetworkErrorString(WSAGetLastError()));
+                    LogPrintf("  Failed send to client (disconnecting): %s\n", NetworkErrorString(WSAGetLastError()));
                     client.disconnect = true;
                     continue;
                 }
 
-                LogPrintf("Sent %d bytes to client\n", bytes_sent);
+                LogPrintf("  Sent %d bytes to client\n", bytes_sent);
                 // Remove sent bytes from the buffer
                 client.sendBuffer.erase(client.sendBuffer.begin(), client.sendBuffer.begin() + bytes_sent);
             }
@@ -468,6 +469,7 @@ static void HandleConnections()
         if ((it->second.occurred & Sock::RECV && client.sendBuffer.size() == 0)
             || it->second.occurred & Sock::ERR) {
 
+            LogPrintf("[client: %s] ready to recv\n", client.origin);
             // Extend the receive buffer memory allocation to prepare for receiving
             // TODO: ensure that we don't keep receiving bytes waiting for a \n for the parser
             // "typical socket buffer is 8K-64K"
@@ -479,19 +481,19 @@ static void HandleConnections()
             ssize_t bytes_received = client.sock->Recv(client.recvBuffer.data() + current_size, additional_size, MSG_DONTWAIT);
 
             if (bytes_received == 0) {
-                LogPrintf("Socket closed gracefully\n");
+                LogPrintf("  Socket closed gracefully\n");
                 client.disconnect = true;
                 continue;
             }
 
             // Socket closed unexpectedly
             if (bytes_received < 0) {
-                LogPrintf("Failed recv from client: %s\n", NetworkErrorString(WSAGetLastError()));
+                LogPrintf("  Failed recv from client: %s\n", NetworkErrorString(WSAGetLastError()));
                 client.disconnect = true;
                 continue;
             }
 
-            LogPrintf("Received %d bytes from client\n", bytes_received);
+            LogPrintf("  Received %d bytes from client\n", bytes_received);
 
             // Trim unused buffer memory
             client.recvBuffer.resize(current_size + bytes_received);
@@ -504,7 +506,7 @@ static void HandleConnections()
                     // Stop reading if we need more data from the client to complete the request
                     if (!client.ReadRequest(req)) break;
                 } catch (const std::runtime_error& e) {
-                    LogPrintf("ReadRequest() error: %s\n", e.what());
+                    LogPrintf("  ReadRequest() error: %s\n", e.what());
                     
                     // We failed to read a complete request from the buffer
                     // Move the incomplete request object into the client's request queue
@@ -516,7 +518,7 @@ static void HandleConnections()
                     break;
                 }
 
-                LogPrintf("Read HTTP request\n");;
+                LogPrintf("  Read HTTP request\n");;
                 // We read a complete request from the buffer
                 // Move the request into the client's request queue
                 client.requests.push_front(req);
@@ -546,7 +548,7 @@ static void DropConnections()
 {
    for (auto it = connectedClients.begin(); it != connectedClients.end();) {
         if (it->disconnect || (it->disconnect_after_send && it->sendBuffer.size() == 0 && it->responses.size() == 0)) {
-            LogPrintf("removing client\n");
+            LogPrintf("[client: %s] Removing client\n", it->origin);
             it = connectedClients.erase(it);
         } else {
             ++it;
