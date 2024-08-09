@@ -29,7 +29,7 @@ static CThreadInterrupt g_interrupt_http;
 static std::vector<std::shared_ptr<Sock>> listeningSockets;
 
 //! Connected clients with live HTTP connections
-static std::vector<HTTPClient> connectedClients;
+static std::vector<std::shared_ptr<HTTPClient>> connectedClients;
 
 //! Callback function to execute HTTP requests
 static void* g_http_callback_arg;
@@ -191,7 +191,7 @@ bool HTTPRequest_mz::ReadBody(LineReader& reader)
     return true;
 }
 
-void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte> body)
+void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte> reply_body)
 {
     HTTPResponse_mz res(&response_headers);
 
@@ -222,7 +222,7 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
             response_headers.Write("Date", FormatRFC7231DateTime(now_seconds));
 
             if (needs_body) {
-                response_headers.Write("Content-Length", std::to_string(body.size()));
+                response_headers.Write("Content-Length", std::to_string(reply_body.size()));
             }
 
             // Default for HTTP 1.1
@@ -245,12 +245,12 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
     // We've been using std::span up until now but it is finally time to copy
     // data. The original data will go out of scope when WriteReply() returns.
     // This is analogous to the memcpy() in libevent's evbuffer_add()
-    res.body.insert(res.body.end(), body.begin(), body.end());
+    res.body.insert(res.body.end(), reply_body.begin(), reply_body.end());
 
     // Add to outgoing queue
     client->responses.push_front(std::move(res));
 
-    LogPrintf("[client: %s] HTTP Response added to client queue with status code %d\n", client->origin, status);
+    LogPrintf("x[client: %s] HTTP Response added to client queue with status code %d\n", client->origin, status);
 }
 
 std::string HTTPResponse_mz::StringifyHeaders() const
@@ -322,7 +322,7 @@ static bool BindListeningSocket(const CService& addrBind)
         return false;
     }
 
-    listeningSockets.push_back(std::move(sock));
+    listeningSockets.push_back(sock);
     return true;
 }
 
@@ -397,12 +397,12 @@ static Sock::EventsPerSock GenerateEventsPerSock()
 
     // We want to either read requests or send replies to connected sockets
     // TODO: maybe don't set RECV if we are pausing this socket due to flooding (max requests in queue?)
-    for (const HTTPClient& connectedClient : connectedClients) {
+    for (auto& connectedClient : connectedClients) {
         Sock::Events events{Sock::RECV};
-        if (connectedClient.sendBuffer.size() > 0 || connectedClient.responses.size() > 0) {
+        if (connectedClient->sendBuffer.size() > 0 || connectedClient->responses.size() > 0) {
             events.requested |= Sock::SEND;
         }
-        events_per_sock.emplace(connectedClient.sock, events);
+        events_per_sock.emplace(connectedClient->sock, events);
     }
 
     return events_per_sock;
@@ -420,108 +420,108 @@ static void HandleConnections()
 
     // Iterate through connectedClients and read or write depending on what is ready
     for (auto& client : connectedClients) {
-        if (client.disconnect) continue;
+        if (client->disconnect) continue;
 
         // First find the socket in events_per_sock corresponding to this client
-        const auto it = events_per_sock.find(client.sock);
+        const auto it = events_per_sock.find(client->sock);
         if (it == events_per_sock.end()) continue;
 
         // Socket is ready to send
         if (it->second.occurred & Sock::SEND) {
-            LogPrintf("[client: %s] ready to send...\n", client.origin);
+            LogPrintf("[client: %s] ready to send...\n", client->origin);
             // Prepare HTTP responses for the wire
-            while (client.responses.size() > 0) {
-                const HTTPResponse_mz res = client.responses.back();
-                client.responses.pop_back();
+            while (client->responses.size() > 0) {
+                const HTTPResponse_mz res = client->responses.back();
+                client->responses.pop_back();
                 // Format response packet headers
                 std::string reply_headers{res.StringifyHeaders()};
                 // Load headers into send buffer
-                client.sendBuffer.insert(
-                    client.sendBuffer.end(),
+                client->sendBuffer.insert(
+                    client->sendBuffer.end(),
                     reinterpret_cast<const std::byte*>(reply_headers.data()),
                     reinterpret_cast<const std::byte*>(reply_headers.data() + reply_headers.size()));
                 // Load response body into send buffer
-                client.sendBuffer.insert(client.sendBuffer.end(), res.body.begin(), res.body.end());
+                client->sendBuffer.insert(client->sendBuffer.end(), res.body.begin(), res.body.end());
                 if (!res.keep_alive) {
-                    client.disconnect_after_send = true;
+                    client->disconnect_after_send = true;
                 }
             }
 
             // Send everything we can
-            size_t res_length{client.sendBuffer.size()};
+            size_t res_length{client->sendBuffer.size()};
             if (res_length > 0) {
-                ssize_t bytes_sent = client.sock->Send(client.sendBuffer.data(), res_length, 0);
+                ssize_t bytes_sent = client->sock->Send(client->sendBuffer.data(), res_length, 0);
 
                 // Error sending through socket
                 if (bytes_sent < 0) {
                     LogPrintf("  Failed send to client (disconnecting): %s\n", NetworkErrorString(WSAGetLastError()));
-                    client.disconnect = true;
+                    client->disconnect = true;
                     continue;
                 }
 
                 LogPrintf("  Sent %d bytes to client\n", bytes_sent);
                 // Remove sent bytes from the buffer
-                client.sendBuffer.erase(client.sendBuffer.begin(), client.sendBuffer.begin() + bytes_sent);
+                client->sendBuffer.erase(client->sendBuffer.begin(), client->sendBuffer.begin() + bytes_sent);
             }
         }
 
         // Do not attempt to receive bytes if the send buffer is not drained
-        if ((it->second.occurred & Sock::RECV && client.sendBuffer.size() == 0)
+        if ((it->second.occurred & Sock::RECV && client->sendBuffer.size() == 0)
             || it->second.occurred & Sock::ERR) {
 
-            LogPrintf("[client: %s] ready to recv\n", client.origin);
+            LogPrintf("[client: %s] ready to recv\n", client->origin);
             // Extend the receive buffer memory allocation to prepare for receiving
             // TODO: ensure that we don't keep receiving bytes waiting for a \n for the parser
             // "typical socket buffer is 8K-64K"
-            size_t current_size = client.recvBuffer.size();
+            size_t current_size = client->recvBuffer.size();
             size_t additional_size{0x10000};
-            client.recvBuffer.resize(current_size + additional_size);
+            client->recvBuffer.resize(current_size + additional_size);
 
             // Read data from socket into the receive buffer
-            ssize_t bytes_received = client.sock->Recv(client.recvBuffer.data() + current_size, additional_size, MSG_DONTWAIT);
+            ssize_t bytes_received = client->sock->Recv(client->recvBuffer.data() + current_size, additional_size, MSG_DONTWAIT);
 
             if (bytes_received == 0) {
                 LogPrintf("  Socket closed gracefully\n");
-                client.disconnect = true;
+                client->disconnect = true;
                 continue;
             }
 
             // Socket closed unexpectedly
             if (bytes_received < 0) {
                 LogPrintf("  Failed recv from client: %s\n", NetworkErrorString(WSAGetLastError()));
-                client.disconnect = true;
+                client->disconnect = true;
                 continue;
             }
 
             LogPrintf("  Received %d bytes from client\n", bytes_received);
 
             // Trim unused buffer memory
-            client.recvBuffer.resize(current_size + bytes_received);
+            client->recvBuffer.resize(current_size + bytes_received);
 
             // Try reading (potentially multiple) HTTP requests from the buffer
-            while (client.recvBuffer.size() > 0) {
+            while (client->recvBuffer.size() > 0) {
                 // Create a new request object and try to fill it with data from recvBuffer
-                auto req = std::make_shared<HTTPRequest_mz>(&client);
+                auto req = std::make_shared<HTTPRequest_mz>(client);
                 try {
                     // Stop reading if we need more data from the client to complete the request
-                    if (!client.ReadRequest(req)) break;
+                    if (!client->ReadRequest(req)) break;
                 } catch (const std::runtime_error& e) {
                     LogPrintf("  ReadRequest() error: %s\n", e.what());
                     
                     // We failed to read a complete request from the buffer
                     // Move the incomplete request object into the client's request queue
                     // anyway because the error reponse we are about to send refers to it
-                    client.requests.push_front(req);
+                    client->requests.push_front(req);
                     req->WriteReply(HTTP_BAD_REQUEST, {});
 
-                    client.disconnect_after_send = true;
+                    client->disconnect_after_send = true;
                     break;
                 }
 
                 LogPrintf("  Read HTTP request\n");;
                 // We read a complete request from the buffer
                 // Move the request into the client's request queue
-                client.requests.push_front(req);
+                client->requests.push_front(req);
 
                 // Process request
                 g_http_callback(req, g_http_callback_arg);
@@ -539,7 +539,8 @@ static void AcceptConnections()
         socklen_t len_client = sizeof(sockaddr);
         std::shared_ptr<Sock> sock_client{listeningSocket->Accept((struct sockaddr*)&sockaddr_client, &len_client)};
         if (sock_client) {
-            connectedClients.push_back(HTTPClient(sock_client, sockaddr_client));
+            auto client{std::make_shared<HTTPClient>(sock_client, sockaddr_client)};
+            connectedClients.push_back(std::move(client));
         }
     }
 }
@@ -547,8 +548,8 @@ static void AcceptConnections()
 static void DropConnections()
 {
    for (auto it = connectedClients.begin(); it != connectedClients.end();) {
-        if (it->disconnect || (it->disconnect_after_send && it->sendBuffer.size() == 0 && it->responses.size() == 0)) {
-            LogPrintf("[client: %s] Removing client\n", it->origin);
+        if ((*it)->disconnect || ((*it)->disconnect_after_send && (*it)->sendBuffer.size() == 0 && (*it)->responses.size() == 0)) {
+            LogPrintf("[client: %s] Removing client\n", (*it)->origin);
             it = connectedClients.erase(it);
         } else {
             ++it;
@@ -572,7 +573,7 @@ static void ThreadHTTP_mz()
 
     LogPrintf("Flushing all connected clients...\n");
     for (auto& client : connectedClients) {
-        client.disconnect_after_send = true;
+        client->disconnect_after_send = true;
     }
     while (connectedClients.size() > 0) {
         HandleConnections();

@@ -94,8 +94,8 @@ public:
     int version_minor{1};
     HTTPHeaders headers;
     std::string body;
-    HTTPClient* client;
-    explicit HTTPRequest_mz(HTTPClient* httpclient) : client(httpclient) {}
+    std::shared_ptr<HTTPClient> client;
+    explicit HTTPRequest_mz(std::shared_ptr<HTTPClient> httpclient) : client(httpclient) {}
 
     // Readers return false if they need more data from the
     // socket to parse properly. They throw errors if
@@ -138,6 +138,9 @@ public:
 
     // Try to read an HTTP request from recvBuffer
     bool ReadRequest(std::shared_ptr<HTTPRequest_mz> req);
+    // Disable copies (should only be used as shared pointers)
+    HTTPClient(const HTTPClient&) = delete;
+    HTTPClient& operator=(const HTTPClient&) = delete;
 };
 
 void SetHTTPCallback(std::function<void(std::shared_ptr<HTTPRequest_mz>, void*)> http_callback);
