@@ -540,7 +540,7 @@ static void AcceptConnections()
         // Copied from Session::Accept() in i2p.cpp
         // and CConnman::AcceptConnection() in net.cpp
         struct sockaddr_storage sockaddr_client;
-        socklen_t len_client = sizeof(sockaddr);
+        socklen_t len_client = sizeof(sockaddr_storage);
         std::shared_ptr<Sock> sock_client{listeningSocket->Accept((struct sockaddr*)&sockaddr_client, &len_client)};
         if (sock_client) {
             auto client{std::make_shared<HTTPClient>(sock_client, sockaddr_client)};
