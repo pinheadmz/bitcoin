@@ -250,12 +250,12 @@ void HTTPRequest_mz::WriteReply(HTTPStatusCode status, std::span<const std::byte
     // Add to outgoing queue
     client->responses.push_front(std::move(res));
 
-    LogPrintf("x[client: %s] HTTP Response added to client queue with status code %d\n", client->origin, status);
+    LogPrintf("[client: %s] HTTP Response added to client queue with status code %d\n", client->origin, status);
 }
 
 std::string HTTPResponse_mz::StringifyHeaders() const
 {
-    return strprintf("HTTP/%d.%d %d %s\r\n%s%s", version_major, version_minor, status, reason, headers->Stringify());
+    return strprintf("HTTP/%d.%d %d %s\r\n%s", version_major, version_minor, status, reason, headers->Stringify());
 }
 
 bool HTTPClient::ReadRequest(std::shared_ptr<HTTPRequest_mz> req)
