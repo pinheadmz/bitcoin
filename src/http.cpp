@@ -307,6 +307,10 @@ static bool BindListeningSocket(const CService& addrBind)
         LogPrintf("Could not set SO_KEEPALIVE on HTTP socket: %s, continuing anyway"), NetworkErrorString(WSAGetLastError());
     }
 
+    // Set the no-delay option (disable Nagle's algorithm) on the TCP socket.
+    if (sock->SetSockOpt(IPPROTO_TCP, TCP_NODELAY, (sockopt_arg_type)&nOne, sizeof(int)) == SOCKET_ERROR) {
+        LogDebug(BCLog::NET, "Unable to set TCP_NODELAY on a newly created socket: %s, continuing anyway\n", NetworkErrorString(WSAGetLastError()));
+    }
 
     // TODO: see libevent evconnlistener_new_bind()
     //
