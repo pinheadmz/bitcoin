@@ -145,6 +145,7 @@ public:
 
 void SetHTTPCallback(std::function<void(std::shared_ptr<HTTPRequest_mz>, void*)> http_callback);
 bool InitHTTPServer_mz(void* http_callback_arg);
+void AddEvent(std::function<void()> cb, int64_t millis);
 void StartHTTPServer_mz();
 void StopHTTPServer_mz();
 

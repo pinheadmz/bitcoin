@@ -38,22 +38,16 @@ static const char* WWW_AUTH_HEADER_DATA = "Basic realm=\"jsonrpc\"";
 class HTTPRPCTimer : public RPCTimerBase
 {
 public:
-    HTTPRPCTimer(struct event_base* eventBase, std::function<void()>& func, int64_t millis) :
-        ev(eventBase, false, func)
+    HTTPRPCTimer(std::function<void()>& func, int64_t millis)
     {
-        struct timeval tv;
-        tv.tv_sec = millis/1000;
-        tv.tv_usec = (millis%1000)*1000;
-        ev.trigger(&tv);
+        AddEvent(func, millis);
     }
-private:
-    HTTPEvent ev;
 };
 
 class HTTPRPCTimerInterface : public RPCTimerInterface
 {
 public:
-    explicit HTTPRPCTimerInterface(struct event_base* _base) : base(_base)
+    explicit HTTPRPCTimerInterface()
     {
     }
     const char* Name() override
@@ -62,10 +56,8 @@ public:
     }
     RPCTimerBase* NewTimer(std::function<void()>& func, int64_t millis) override
     {
-        return new HTTPRPCTimer(base, func, millis);
+        return new HTTPRPCTimer(func, millis);
     }
-private:
-    struct event_base* base;
 };
 
 
@@ -369,7 +361,7 @@ bool StartHTTPRPC(const std::any& context)
     }
     struct event_base* eventBase = EventBase();
     assert(eventBase);
-    httpRPCTimerInterface = std::make_unique<HTTPRPCTimerInterface>(eventBase);
+    httpRPCTimerInterface = std::make_unique<HTTPRPCTimerInterface>();
     RPCSetTimerInterface(httpRPCTimerInterface.get());
     return true;
 }

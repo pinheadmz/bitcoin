@@ -16,6 +16,7 @@
 #include <tinyformat.h>
 #include <util/threadnames.h>
 #include <util/threadinterrupt.h>
+#include <util/time.h>
 
 using util::SplitString;
 using util::TrimString;
@@ -35,6 +36,8 @@ static std::vector<std::shared_ptr<HTTPClient>> connectedClients;
 static void* g_http_callback_arg;
 static std::function<void(std::shared_ptr<HTTPRequest_mz>, void*)> g_http_callback;
 
+//! Scheduled events (like relock wallet)
+static std::map<std::chrono::microseconds, std::function<void()>> scheduledEvents;
 
 // TODO: could go in string.h?
 struct LineReader
@@ -561,6 +564,28 @@ static void DropConnections()
     }
 }
 
+static void TriggerEvents()
+{
+    const auto current_time{GetTime<std::chrono::microseconds>()};
+    auto it = scheduledEvents.begin();
+    // Iterate through scheduled events: trigger and delete anything in the past
+    while (it != scheduledEvents.end() && it->first <= current_time) {
+        LogPrintf("Executing event scheduled for %d (now: %d)\n", it->first, current_time);
+        // Execute callback
+        it->second();
+        // Remove the event from the map
+        it = scheduledEvents.erase(it);
+    }
+}
+
+void AddEvent(std::function<void()> cb, int64_t millis)
+{
+    auto micros = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(millis));
+    const auto current_time{GetTime<std::chrono::microseconds>()};
+    scheduledEvents.emplace(micros + current_time, cb);
+    LogPrintf("Added scheduled event\n");
+}
+
 static void ThreadHTTP_mz()
 {
     util::ThreadRename("http_mz");
@@ -570,7 +595,11 @@ static void ThreadHTTP_mz()
         HandleConnections();
         AcceptConnections();
         DropConnections();
+        TriggerEvents();
     }
+
+    LogPrintf("Clearing scheduled events...\n");
+    scheduledEvents.clear();
 
     LogPrintf("Clearing listening sockets...\n");
     listeningSockets.clear();
