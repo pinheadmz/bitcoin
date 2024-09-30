@@ -21,6 +21,8 @@ static const int DEFAULT_HTTP_SERVER_TIMEOUT=30;
 struct evhttp_request;
 struct event_base;
 class CService;
+
+namespace http_libevent {
 class HTTPRequest;
 
 /** Initialize HTTP server.
@@ -39,9 +41,10 @@ void StopHTTPServer();
 
 /** Change logging level for libevent. */
 void UpdateHTTPServerLogging(bool enable);
+} // namespace http_libevent
 
 /** Handler for requests to a certain HTTP path */
-typedef std::function<bool(HTTPRequest* req, const std::string &)> HTTPRequestHandler;
+typedef std::function<bool(http_libevent::HTTPRequest* req, const std::string&)> HTTPRequestHandler;
 /** Register handler for prefix.
  * If multiple handlers match a prefix, the first-registered one will
  * be invoked.
@@ -55,6 +58,7 @@ void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch);
  */
 struct event_base* EventBase();
 
+namespace http_libevent {
 /** In-flight HTTP request.
  * Thin C++ wrapper around evhttp_request.
  */
@@ -135,6 +139,8 @@ public:
     }
     void WriteReply(int nStatus, std::span<const std::byte> reply);
 };
+} // namespace http_libevent
+
 
 /** Get the query parameter value from request uri for a specified key, or std::nullopt if the key
  * is not found.

@@ -43,6 +43,8 @@
 
 #include <support/events.h>
 
+using http_libevent::HTTPRequest;
+
 /** Maximum size of http request (request line + headers) */
 static const size_t MAX_HEADERS_SIZE = 8192;
 
@@ -430,6 +432,7 @@ static void libevent_log_cb(int severity, const char *msg)
     LogPrintLevel(BCLog::LIBEVENT, level, "%s\n", msg);
 }
 
+namespace http_libevent {
 bool InitHTTPServer(const util::SignalInterrupt& interrupt)
 {
     if (!InitHTTPAllowList())
@@ -551,6 +554,7 @@ void StopHTTPServer()
     g_work_queue.reset();
     LogDebug(BCLog::HTTP, "Stopped HTTP server\n");
 }
+} // namespace http_libevent
 
 struct event_base* EventBase()
 {
@@ -583,6 +587,8 @@ void HTTPEvent::trigger(struct timeval* tv)
     else
         evtimer_add(ev, tv); // trigger after timeval passed
 }
+
+namespace http_libevent {
 HTTPRequest::HTTPRequest(struct evhttp_request* _req, const util::SignalInterrupt& interrupt, bool _replySent)
     : req(_req), m_interrupt(interrupt), replySent(_replySent)
 {
@@ -670,6 +676,7 @@ void HTTPRequest::WriteReply(int nStatus, std::span<const std::byte> reply)
     replySent = true;
     req = nullptr; // transferred back to main thread
 }
+} // namespace http_libevent
 
 CService HTTPRequest::GetPeer() const
 {
