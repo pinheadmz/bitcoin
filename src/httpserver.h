@@ -193,6 +193,14 @@ private:
 };
 
 namespace http_bitcoin {
+using util::LineReader;
+
+// shortest valid request line, used by libevent in evhttp_parse_request_line()
+static const size_t MIN_REQUEST_LINE_LENGTH{strlen("GET / HTTP/1.0")};
+// maximum size of http request (request line + headers)
+// see https://github.com/bitcoin/bitcoin/issues/6425
+static const size_t MAX_HEADERS_SIZE{8192};
+
 enum HTTPStatusCode {
     HTTP_OK = 200,
     HTTP_NO_CONTENT = 204,
@@ -244,6 +252,25 @@ public:
     explicit HTTPResponse(HTTPHeaders* headersIn) : m_headers(headersIn) {}
 
     std::string StringifyHeaders() const;
+};
+
+class HTTPRequest
+{
+public:
+    std::string m_method;
+    std::string m_target;
+    // Default protocol version is used by error responses to unreadable requests
+    int m_version_major{1};
+    int m_version_minor{1};
+    HTTPHeaders m_headers;
+    std::string m_body;
+
+    // Readers return false if they need more data from the
+    // socket to parse properly. They throw errors if
+    // the data is invalid.
+    bool ReadControlData(LineReader& reader);
+    bool ReadHeaders(LineReader& reader);
+    bool ReadBody(LineReader& reader);
 };
 } // namespace http_bitcoin
 
