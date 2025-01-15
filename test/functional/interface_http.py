@@ -37,8 +37,7 @@ class BitcoinHTTPConnection:
             self.conn.request('GET', '/')
             self.conn.getresponse().read()
             return False
-        #       macos/linux           windows
-        except (ConnectionResetError, ConnectionAbortedError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return True
 
     def close_sock(self):
@@ -185,11 +184,6 @@ class HTTPBasicsTest (BitcoinTestFramework):
         header_line_length = len("header_0000: foo\r\n")
         headers_below_limit = (MAX_HEADERS_SIZE - 1000) // header_line_length
         headers_above_limit = MAX_HEADERS_SIZE // header_line_length
-
-        # This is a libevent mystery:
-        # libevent does not reject the request until it is more than
-        # 1,000 bytes above the configured limit.
-        headers_above_limit += 1000 // header_line_length
 
         # Many small header lines is ok
         conn = BitcoinHTTPConnection(self.node)
