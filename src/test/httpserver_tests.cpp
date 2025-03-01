@@ -652,8 +652,15 @@ BOOST_AUTO_TEST_CASE(http_remote_client_send_retry_tests)
     }};
 
     // NUM_REQUESTS must be odd.
-    // TODO: Explain rationale when it becomes required to pass the test
-    // in a future commit.
+    // This ensures that m_send_ready is correctly set in the optimistic send path.
+    // If it weren't, an even number of requests would falsely pass the test:
+    // - ErrorSock returns WSAEAGAIN on the first Send() attempt of each reply
+    // - The recoverable error leaves the reply stuck in the send buffer (expected)
+    // - The *next* request would not take the optimistic send path, m_send_ready is set true
+    // - Both replies would be flushed and the test would pass
+    // What we want to see is the stuck reply get flushed in the next I/O loop iteration,
+    // when ErrorSock::Send() succeeds. This won't happen if m_send_ready is still
+    // false after the recoverable error.
     static constexpr int NUM_REQUESTS = 9;
 
     // Use keep-alive so the server holds the connection open for all requests.
