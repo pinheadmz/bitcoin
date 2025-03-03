@@ -589,13 +589,18 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
     BOOST_CHECK(actual.find("Content-Type: text/html; charset=ISO-8859-1\r\n") != std::string::npos);
     BOOST_CHECK(actual.find("Date: Wed, 11 Dec 2024 00:47:09 GMT\r\n") != std::string::npos);
 
-    // Stop the I/O thread before modifying m_connected. CloseConnection() is a
-    // temporary test-only API that is not thread-safe against GenerateWaitSockets(),
-    // which iterates m_connected on the I/O thread.
+    // Wait up to one minute for connection to be automatically closed, because
+    // keep-alive was not set by the client and we are done responding to their request.
+    attempts = 6000;
+    while (server.GetConnectionsCount() != 0) {
+        std::this_thread::sleep_for(10ms);
+        BOOST_REQUIRE(--attempts > 0);
+    }
+
+    // Stop the I/O loop and shutdown
     server.InterruptNet();
+    // Wait for I/O loop to finish, after all connected sockets are closed
     server.JoinSocketsThreads();
-    // Close connection
-    BOOST_REQUIRE(server.CloseConnection(*client));
     // Close all listening sockets
     server.StopListening();
 }
@@ -651,10 +656,14 @@ BOOST_AUTO_TEST_CASE(http_remote_client_send_retry_tests)
     // in a future commit.
     static constexpr int NUM_REQUESTS = 9;
 
+    // Use keep-alive so the server holds the connection open for all requests.
+    std::string keepalive_request{full_request};
+    keepalive_request.replace(keepalive_request.find("Connection: close"), 17, "Connection: keep-alive");
+
     // Fire off the requests with increasing delays so some requests arrive
     // within the same I/O loop iteration and some get processed on their own.
     for (int i = 0; i < NUM_REQUESTS; i++) {
-        mock_client_socket_pipes->recv.PushBytes(full_request.data(), full_request.size());
+        mock_client_socket_pipes->recv.PushBytes(keepalive_request.data(), keepalive_request.size());
         std::this_thread::sleep_for(2ms * i);
     }
 
@@ -683,9 +692,11 @@ BOOST_AUTO_TEST_CASE(http_remote_client_send_retry_tests)
         BOOST_REQUIRE(actual.find(strprintf("height:%d", i)) != std::string::npos);
     }
 
+    // Close the keep-alive connection
+    server.DisconnectAllClients();
+
     server.InterruptNet();
     server.JoinSocketsThreads();
-    BOOST_REQUIRE(server.CloseConnection(*client));
     server.StopListening();
 }
 
