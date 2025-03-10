@@ -21,6 +21,7 @@
 #include <util/sock.h>
 #include <util/strencodings.h>
 #include <util/string.h>
+#include <util/time.h>
 
 namespace util {
 class SignalInterrupt;
@@ -383,6 +384,11 @@ public:
      */
     bool NoClients() { return m_no_clients; }
 
+    /**
+     * Set the idle client timeout (-rpcservertimeout)
+     */
+    void SetServerTimeout(std::chrono::seconds seconds) { m_rpcservertimeout = seconds; }
+
 private:
     /**
      * List of listening sockets.
@@ -453,6 +459,11 @@ private:
      * What to do with HTTP requests once received, validated and parsed
      */
     std::function<void(std::unique_ptr<HTTPRequest>&&)> m_request_dispatcher;
+
+    /**
+     * Idle timeout after which clients are disconnected
+     */
+    std::chrono::seconds m_rpcservertimeout{DEFAULT_HTTP_SERVER_TIMEOUT};
 
     /**
      * Accept a connection.
@@ -595,9 +606,15 @@ public:
     //! Flag this client for disconnection on next loop
     bool m_disconnect{false};
 
+    //! Timestamp of last receive activity, used for -rpcservertimeout
+    SteadySeconds m_idle_since;
+
     explicit HTTPClient(HTTPServer::Id id, CService addr, std::unique_ptr<Sock> socket) : m_id(id), m_addr(addr), m_sock{std::move(socket)}
     {
         m_origin = addr.ToStringAddrPort();
+
+        // Set timeout
+        m_idle_since = Now<SteadySeconds>();
     };
 
     // Disable copies (should only be used as shared pointers)
