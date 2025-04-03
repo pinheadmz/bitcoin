@@ -1037,6 +1037,9 @@ void HTTPRequest::WriteReply(HTTPStatusCode status, std::span<const std::byte> r
         // in the next loop iteration.
         m_client->m_send_ready = true;
     }
+
+    // Signal to the Sockman I/O loop that we are ready to handle the next request.
+    m_client->m_req_busy = false;
 }
 
 bool HTTPClient::ReadRequest(std::unique_ptr<HTTPRequest>& req)
@@ -1211,8 +1214,8 @@ void HTTPServer::EventGotData(NodeId node_id, std::span<const uint8_t> data)
             req->m_client->m_origin,
             req->m_client->m_node_id);
 
-        // handle request
-        m_request_dispatcher(std::move(req));
+        // add request to client queue
+        client->m_req_queue.push_back(std::move(req));
     }
 }
 
@@ -1236,6 +1239,26 @@ void HTTPServer::EventGotPermanentReadError(NodeId node_id, const std::string& e
     }
 
     client->m_disconnect = true;
+}
+
+void HTTPServer::EventIOLoopCompletedForOne(NodeId node_id)
+{
+    // Get the HTTPClient
+    auto client{GetClientById(node_id)};
+    if (client == nullptr) {
+        return;
+    }
+
+    // If we are already handling a request from
+    // this client, do nothing.
+    if (client->m_req_busy) return;
+
+    // Otherwise, if there is a new pending request, handle it.
+    if (!client->m_req_queue.empty()) {
+        client->m_req_busy = true;
+        m_request_dispatcher(std::move(client->m_req_queue.front()));
+        client->m_req_queue.pop_front();
+    }
 }
 
 void HTTPServer::EventIOLoopCompletedForAll()
