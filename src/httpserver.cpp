@@ -309,7 +309,7 @@ void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch)
 }
 
 namespace http_bitcoin {
-using util::SplitString;
+using util::Split;
 
 std::optional<std::string> HTTPHeaders::Find(const std::string key) const
 {
@@ -389,13 +389,13 @@ bool HTTPRequest::LoadControlData(LineReader& reader)
     // Three words separated by spaces, terminated by \n or \r\n
     if (request_line.length() < MIN_REQUEST_LINE_LENGTH) throw std::runtime_error("HTTP request line too short");
 
-    const std::vector<std::string> parts{SplitString(request_line, " ")};
+    const std::vector<std::string_view> parts{Split<std::string_view>(request_line, " ")};
     if (parts.size() != 3) throw std::runtime_error("HTTP request line malformed");
     m_method = parts[0];
     m_target = parts[1];
 
     if (parts[2].rfind("HTTP/") != 0) throw std::runtime_error("HTTP request line malformed");
-    const std::vector<std::string> version_parts{SplitString(parts[2].substr(5), ".")};
+    const std::vector<std::string_view> version_parts{Split<std::string_view>(parts[2].substr(5), ".")};
     if (version_parts.size() != 2) throw std::runtime_error("HTTP request line malformed");
     auto major = ToIntegral<int>(version_parts[0]);
     auto minor = ToIntegral<int>(version_parts[1]);
