@@ -24,15 +24,16 @@ std::optional<std::string> LineReader::ReadLine()
     }
 
     auto line_start = it;
-    std::string line{};
+    size_t count = 0;
     while (it != end) {
         char c = static_cast<char>(*it);
-        line += c;
         ++it;
+        ++count;
         if (c == '\n') break;
-        if ((size_t)std::distance(line_start, it) >= max_read) throw std::runtime_error("max_read exceeded by LineReader");
+        if (count >= max_read) throw std::runtime_error("max_read exceeded by LineReader");
     }
-
+    const std::byte *data = &*line_start;
+    std::string line{reinterpret_cast<const char *>(data), count};
     line = TrimString(line); // delete trailing \r and/or \n
     return line;
 }
