@@ -128,16 +128,9 @@ public:
     // Response headers may be set in advance before response body is known
     HTTPHeaders m_response_headers;
     void WriteReply(HTTPStatusCode status, std::span<const std::byte> reply_body = {});
-    void WriteReply(HTTPStatusCode status, const char* reply_body)
+    void WriteReply(HTTPStatusCode status, std::string_view reply_body_view)
     {
-        auto reply_body_view = std::string_view(reply_body);
-        std::span<const std::byte> byte_span(reinterpret_cast<const std::byte*>(reply_body_view.data()), reply_body_view.size());
-        WriteReply(status, byte_span);
-    }
-    void WriteReply(HTTPStatusCode status, const std::string& reply_body)
-    {
-        std::span<const std::byte> byte_span{reinterpret_cast<const std::byte*>(reply_body.data()), reply_body.size()};
-        WriteReply(status, byte_span);
+        WriteReply(status, std::as_bytes(std::span{reply_body_view}));
     }
 };
 
