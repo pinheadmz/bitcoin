@@ -172,7 +172,7 @@ static bool InitHTTPAllowList()
 }
 
 /** HTTP request method as string - use for logging only */
-std::string RequestMethodString(HTTPRequestMethod m)
+std::string_view RequestMethodString(HTTPRequestMethod m)
 {
     switch (m) {
     case HTTPRequestMethod::GET:
