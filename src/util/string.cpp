@@ -32,10 +32,9 @@ std::optional<std::string> LineReader::ReadLine()
         if (c == '\n') break;
         if (count >= max_read) throw std::runtime_error("max_read exceeded by LineReader");
     }
-    const std::byte *data = &*line_start;
-    std::string line{reinterpret_cast<const char *>(data), count};
-    line = TrimString(line); // delete trailing \r and/or \n
-    return line;
+    const std::string_view untrimmed_line(reinterpret_cast<const char *>(&*line_start), count);
+    const std::string_view line = TrimStringView(untrimmed_line); // delete trailing \r and/or \n
+    return std::string(line);
 }
 
 // Ignores max_read but won't overflow
