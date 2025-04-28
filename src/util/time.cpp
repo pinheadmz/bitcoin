@@ -124,9 +124,9 @@ std::string FormatRFC7231DateTime(int64_t nTime)
     const std::chrono::sys_seconds secs{std::chrono::seconds{nTime}};
     const auto days{std::chrono::floor<std::chrono::days>(secs)};
     // 1970-01-01 was a Thursday
-    std::string weekday{weekdays[(days.time_since_epoch().count() + 4) % 7]};
+    std::string_view weekday{weekdays[(days.time_since_epoch().count() + 4) % 7]};
     const std::chrono::year_month_day ymd{days};
-    std::string month{months[unsigned{ymd.month()} - 1]};
+    std::string_view month{months[unsigned{ymd.month()} - 1]};
     const std::chrono::hh_mm_ss hms{secs - days};
     // examples: Mon, 27 Jul 2009 12:28:53 GMT
     //           Fri, 31 May 2024 19:18:04 GMT
