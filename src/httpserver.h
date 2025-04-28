@@ -64,7 +64,7 @@ static const size_t MAX_HEADERS_SIZE{8192};
 class HTTPHeaders
 {
 public:
-    std::optional<std::string> Find(const std::string key) const;
+    std::optional<std::string_view> Find(const std::string key) const;
     void Write(const std::string key, const std::string value);
     void Remove(const std::string key);
     bool Read(util::LineReader& reader);
@@ -121,7 +121,7 @@ public:
     CService GetPeer() const;
     HTTPRequestMethod GetRequestMethod() const;
     std::optional<std::string> GetQueryParameter(const std::string& key) const;
-    std::pair<bool, std::string> GetHeader(const std::string& hdr) const;
+    std::pair<bool, std::string_view> GetHeader(const std::string& hdr) const;
     std::string ReadBody() const {return m_body;};
     void WriteHeader(const std::string& hdr, const std::string& value);
 
