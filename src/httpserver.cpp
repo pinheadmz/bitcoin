@@ -805,11 +805,11 @@ void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch)
 namespace http_bitcoin {
 using util::Split;
 
-std::optional<std::string> HTTPHeaders::Find(const std::string key) const
+std::optional<std::string_view> HTTPHeaders::Find(const std::string key) const
 {
     const auto it = m_map.find(key);
     if (it == m_map.end()) return std::nullopt;
-    return it->second;
+    return std::string_view(it->second);
 }
 
 void HTTPHeaders::Write(const std::string key, const std::string value)
@@ -817,7 +817,7 @@ void HTTPHeaders::Write(const std::string key, const std::string value)
     // If present, append value to list
     const auto existing_value = Find(key);
     if (existing_value) {
-        m_map[key] = existing_value.value() + ", " + value;
+        m_map[key] = std::string(existing_value.value()) + ", " + value;
     } else {
         m_map[key] = value;
     }
@@ -1008,9 +1008,9 @@ std::optional<std::string> GetQueryParameterFromUri(const std::string& uri, cons
     return std::nullopt;
 }
 
-std::pair<bool, std::string> HTTPRequest::GetHeader(const std::string& hdr) const
+std::pair<bool, std::string_view> HTTPRequest::GetHeader(const std::string& hdr) const
 {
-    std::optional<std::string> found{m_headers.Find(hdr)};
+    std::optional<std::string_view> found{m_headers.Find(hdr)};
     if (found.has_value()) {
         return std::make_pair(true, found.value());
     } else
