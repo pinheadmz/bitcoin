@@ -498,16 +498,16 @@ std::optional<std::string> GetQueryParameterFromUri(const std::string& uri, cons
     if (end == std::string::npos) {
         end = decoded_uri.length();
     }
-    const std::string query{decoded_uri.substr(start + 1, end - start - 1)};
+    const std::string_view query{decoded_uri.substr(start + 1, end - start - 1)};
     // find requested parameter in query
-    const std::vector<std::string> params{SplitString(query, "&")};
-    for (const std::string& param : params) {
+    const std::vector<std::string_view> params{Split<std::string_view>(query, "&")};
+    for (const std::string_view& param : params) {
         size_t delim = param.find('=');
         if (key == param.substr(0, delim)) {
             if (delim == std::string::npos) {
                 return "";
             } else {
-                return param.substr(delim + 1);
+                return std::string(param.substr(delim + 1));
             }
         }
     }
