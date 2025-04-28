@@ -364,8 +364,8 @@ bool HTTPHeaders::Read(util::LineReader& reader)
 std::string HTTPHeaders::Stringify() const
 {
     std::string out;
-    for (auto it = m_map.begin(); it != m_map.end(); ++it) {
-        out += it->first + ": " + it->second + "\r\n";
+    for (const auto& [key, value] : m_map) {
+        out += key + ": " + value + "\r\n";
     }
 
     // Headers are terminated by an empty line
