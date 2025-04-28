@@ -500,7 +500,6 @@ std::optional<uint64_t> ParseByteUnits(std::string_view str, ByteUnit default_mu
 
 std::vector<std::byte> StringToBuffer(const std::string& str)
 {
-    return std::vector<std::byte>(
-        reinterpret_cast<const std::byte*>(str.data()),
-        reinterpret_cast<const std::byte*>(str.data() + str.size()));
+    auto span = std::as_bytes(std::span(str));
+    return {span.begin(), span.end()};
 }
