@@ -116,22 +116,10 @@ void SockMan::StartSocketsThreads(const Options& options)
 {
     m_thread_socket_handler = std::thread(
         &util::TraceThread, options.socket_handler_thread_name, [this] { ThreadSocketHandler(); });
-
-    if (options.i2p.has_value()) {
-        m_i2p_sam_session = std::make_unique<i2p::sam::Session>(
-            options.i2p->private_key_file, options.i2p->sam_proxy, &interruptNet);
-
-        m_thread_i2p_accept =
-            std::thread(&util::TraceThread, options.i2p->accept_thread_name, [this] { ThreadI2PAccept(); });
-    }
 }
 
 void SockMan::JoinSocketsThreads()
 {
-    if (m_thread_i2p_accept.joinable()) {
-        m_thread_i2p_accept.join();
-    }
-
     if (m_thread_socket_handler.joinable()) {
         m_thread_socket_handler.join();
     }
@@ -145,49 +133,14 @@ SockMan::ConnectAndMakeId(const std::variant<CService, StringHostIntPort>& to,
                           CService& me)
 {
     AssertLockNotHeld(m_connected_mutex);
-    AssertLockNotHeld(m_unused_i2p_sessions_mutex);
 
     std::unique_ptr<Sock> sock;
-    std::unique_ptr<i2p::sam::Session> i2p_transient_session;
 
     Assume(!me.IsValid());
 
     if (std::holds_alternative<CService>(to)) {
         const CService& addr_to{std::get<CService>(to)};
-        if (addr_to.IsI2P()) {
-            if (!Assume(proxy.has_value())) {
-                return std::nullopt;
-            }
-
-            i2p::Connection conn;
-            bool connected{false};
-
-            if (m_i2p_sam_session) {
-                connected = m_i2p_sam_session->Connect(addr_to, conn, proxy_failed);
-            } else {
-                {
-                    LOCK(m_unused_i2p_sessions_mutex);
-                    if (m_unused_i2p_sessions.empty()) {
-                        i2p_transient_session = std::make_unique<i2p::sam::Session>(proxy.value(), &interruptNet);
-                    } else {
-                        i2p_transient_session.swap(m_unused_i2p_sessions.front());
-                        m_unused_i2p_sessions.pop();
-                    }
-                }
-                connected = i2p_transient_session->Connect(addr_to, conn, proxy_failed);
-                if (!connected) {
-                    LOCK(m_unused_i2p_sessions_mutex);
-                    if (m_unused_i2p_sessions.size() < MAX_UNUSED_I2P_SESSIONS_SIZE) {
-                        m_unused_i2p_sessions.emplace(i2p_transient_session.release());
-                    }
-                }
-            }
-
-            if (connected) {
-                sock = std::move(conn.sock);
-                me = conn.me;
-            }
-        } else if (proxy.has_value()) {
+        if (proxy.has_value()) {
             sock = ConnectThroughProxy(proxy.value(), addr_to.ToStringAddr(), addr_to.GetPort(), proxy_failed);
         } else {
             sock = ConnectDirectly(addr_to, is_important);
@@ -215,8 +168,7 @@ SockMan::ConnectAndMakeId(const std::variant<CService, StringHostIntPort>& to,
 
     {
         LOCK(m_connected_mutex);
-        m_connected.emplace(id, std::make_shared<ConnectionSockets>(std::move(sock),
-                                                                    std::move(i2p_transient_session)));
+        m_connected.emplace(id, std::make_shared<ConnectionSockets>(std::move(sock)));
     }
 
     return id;
@@ -281,54 +233,11 @@ void SockMan::EventIOLoopCompletedForOne(Id id) {}
 
 void SockMan::EventIOLoopCompletedForAll() {}
 
-void SockMan::EventI2PStatus(const CService&, I2PStatus) {}
-
 void SockMan::TestOnlyAddExistentConnection(Id id, std::unique_ptr<Sock>&& sock)
 {
     LOCK(m_connected_mutex);
     const auto result{m_connected.emplace(id, std::make_shared<ConnectionSockets>(std::move(sock)))};
     assert(result.second);
-}
-
-void SockMan::ThreadI2PAccept()
-{
-    AssertLockNotHeld(m_connected_mutex);
-
-    static constexpr auto err_wait_begin = 1s;
-    static constexpr auto err_wait_cap = 5min;
-    auto err_wait = err_wait_begin;
-
-    i2p::Connection conn;
-
-    auto SleepOnFailure = [&]() {
-        interruptNet.sleep_for(err_wait);
-        if (err_wait < err_wait_cap) {
-            err_wait += 1s;
-        }
-    };
-
-    while (!interruptNet) {
-
-        if (!m_i2p_sam_session->Listen(conn)) {
-            EventI2PStatus(conn.me, SockMan::I2PStatus::STOP_LISTENING);
-            SleepOnFailure();
-            continue;
-        }
-
-        EventI2PStatus(conn.me, SockMan::I2PStatus::START_LISTENING);
-
-        if (!m_i2p_sam_session->Accept(conn)) {
-            SleepOnFailure();
-            continue;
-        }
-
-        Assume(conn.me.IsI2P());
-        Assume(conn.peer.IsI2P());
-
-        NewSockAccepted(std::move(conn.sock), conn.me, conn.peer);
-
-        err_wait = err_wait_begin;
-    }
 }
 
 void SockMan::ThreadSocketHandler()
