@@ -125,55 +125,6 @@ void SockMan::JoinSocketsThreads()
     }
 }
 
-std::optional<SockMan::Id>
-SockMan::ConnectAndMakeId(const std::variant<CService, StringHostIntPort>& to,
-                          bool is_important,
-                          std::optional<Proxy> proxy,
-                          bool& proxy_failed,
-                          CService& me)
-{
-    AssertLockNotHeld(m_connected_mutex);
-
-    std::unique_ptr<Sock> sock;
-
-    Assume(!me.IsValid());
-
-    if (std::holds_alternative<CService>(to)) {
-        const CService& addr_to{std::get<CService>(to)};
-        if (proxy.has_value()) {
-            sock = ConnectThroughProxy(proxy.value(), addr_to.ToStringAddr(), addr_to.GetPort(), proxy_failed);
-        } else {
-            sock = ConnectDirectly(addr_to, is_important);
-        }
-    } else {
-        if (!Assume(proxy.has_value())) {
-            return std::nullopt;
-        }
-
-        const auto& hostport{std::get<StringHostIntPort>(to)};
-
-        bool dummy_proxy_failed;
-        sock = ConnectThroughProxy(proxy.value(), hostport.host, hostport.port, dummy_proxy_failed);
-    }
-
-    if (!sock) {
-        return std::nullopt;
-    }
-
-    if (!me.IsValid()) {
-        me = GetBindAddress(*sock);
-    }
-
-    const Id id{GetNewId()};
-
-    {
-        LOCK(m_connected_mutex);
-        m_connected.emplace(id, std::make_shared<ConnectionSockets>(std::move(sock)));
-    }
-
-    return id;
-}
-
 bool SockMan::CloseConnection(Id id)
 {
     LOCK(m_connected_mutex);
@@ -220,11 +171,6 @@ ssize_t SockMan::SendBytes(Id id,
     return -1;
 }
 
-void SockMan::StopListening()
-{
-    m_listen.clear();
-}
-
 bool SockMan::ShouldTryToSend(Id id) const { return true; }
 
 bool SockMan::ShouldTryToRecv(Id id) const { return true; }
@@ -232,13 +178,6 @@ bool SockMan::ShouldTryToRecv(Id id) const { return true; }
 void SockMan::EventIOLoopCompletedForOne(Id id) {}
 
 void SockMan::EventIOLoopCompletedForAll() {}
-
-void SockMan::TestOnlyAddExistentConnection(Id id, std::unique_ptr<Sock>&& sock)
-{
-    LOCK(m_connected_mutex);
-    const auto result{m_connected.emplace(id, std::make_shared<ConnectionSockets>(std::move(sock)))};
-    assert(result.second);
-}
 
 void SockMan::ThreadSocketHandler()
 {

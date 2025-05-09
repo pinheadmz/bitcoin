@@ -73,33 +73,6 @@ public:
     void JoinSocketsThreads();
 
     /**
-     * A more readable std::tuple<std::string, uint16_t> for host and port.
-     */
-    struct StringHostIntPort {
-        const std::string& host;
-        uint16_t port;
-    };
-
-    /**
-     * Make an outbound connection, save the socket internally and return a newly generated connection id.
-     * @param[in] to The address to connect to, either as CService or a host as string and port as
-     * an integer, if the later is used, then `proxy` must be valid.
-     * @param[in] is_important If true, then log failures with higher severity.
-     * @param[in] proxy Proxy to connect through, if set.
-     * @param[out] proxy_failed If `proxy` is valid and the connection failed because of the
-     * proxy, then it will be set to true.
-     * @param[out] me If the connection was successful then this is set to the address on the
-     * local side of the socket.
-     * @return Newly generated id, or std::nullopt if the operation fails.
-     */
-    std::optional<SockMan::Id> ConnectAndMakeId(const std::variant<CService, StringHostIntPort>& to,
-                                                bool is_important,
-                                                std::optional<Proxy> proxy,
-                                                bool& proxy_failed,
-                                                CService& me)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_connected_mutex);
-
-    /**
      * Destroy a given connection by closing its socket and release resources occupied by it.
      * @param[in] id Connection to destroy.
      * @return Whether the connection existed and its socket was closed by this call.
@@ -125,25 +98,9 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_connected_mutex);
 
     /**
-     * Stop listening by closing all listening sockets.
-     */
-    void StopListening();
-
-    /**
      * This is signaled when network activity should cease.
      */
     CThreadInterrupt interruptNet;
-
-protected:
-
-    /**
-     * During some tests mocked sockets are created outside of `SockMan`, make it
-     * possible to add those so that send/recv can be exercised.
-     * @param[in] id Connection id to add.
-     * @param[in,out] sock Socket to associate with the added connection.
-     */
-    void TestOnlyAddExistentConnection(Id id, std::unique_ptr<Sock>&& sock)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_connected_mutex);
 
 private:
 
