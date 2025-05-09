@@ -5,7 +5,6 @@
 #ifndef BITCOIN_COMMON_SOCKMAN_H
 #define BITCOIN_COMMON_SOCKMAN_H
 
-#include <i2p.h>
 #include <netaddress.h>
 #include <netbase.h>
 #include <util/fs.h>
@@ -40,17 +39,6 @@ public:
      */
     using Id = int64_t;
 
-    /**
-     * Possible status changes that can be passed to `EventI2PStatus()`.
-     */
-    enum class I2PStatus : uint8_t {
-        /// The listen succeeded and we are now listening for incoming I2P connections.
-        START_LISTENING,
-
-        /// The listen failed and now we are not listening (even if START_LISTENING was signaled before).
-        STOP_LISTENING,
-    };
-
     virtual ~SockMan() = default;
 
     //
@@ -72,23 +60,6 @@ public:
      */
     struct Options {
         std::string_view socket_handler_thread_name;
-
-        struct I2P {
-            explicit I2P(const fs::path& file, const Proxy& proxy, std::string_view accept_thread_name)
-                : private_key_file{file},
-                  sam_proxy{proxy},
-                  accept_thread_name{accept_thread_name}
-            {}
-
-            const fs::path private_key_file;
-            const Proxy sam_proxy;
-            const std::string_view accept_thread_name;
-        };
-
-        /**
-         * I2P options. If set then a thread will be started that will accept incoming I2P connections.
-         */
-        std::optional<I2P> i2p;
     };
 
     /**
@@ -100,33 +71,6 @@ public:
      * Join (wait for) the threads started by `StartSocketsThreads()` to exit.
      */
     void JoinSocketsThreads();
-
-    /**
-     * A more readable std::tuple<std::string, uint16_t> for host and port.
-     */
-    struct StringHostIntPort {
-        const std::string& host;
-        uint16_t port;
-    };
-
-    /**
-     * Make an outbound connection, save the socket internally and return a newly generated connection id.
-     * @param[in] to The address to connect to, either as CService or a host as string and port as
-     * an integer, if the later is used, then `proxy` must be valid.
-     * @param[in] is_important If true, then log failures with higher severity.
-     * @param[in] proxy Proxy to connect through, if set.
-     * @param[out] proxy_failed If `proxy` is valid and the connection failed because of the
-     * proxy, then it will be set to true.
-     * @param[out] me If the connection was successful then this is set to the address on the
-     * local side of the socket.
-     * @return Newly generated id, or std::nullopt if the operation fails.
-     */
-    std::optional<SockMan::Id> ConnectAndMakeId(const std::variant<CService, StringHostIntPort>& to,
-                                                bool is_important,
-                                                std::optional<Proxy> proxy,
-                                                bool& proxy_failed,
-                                                CService& me)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_connected_mutex, !m_unused_i2p_sessions_mutex);
 
     /**
      * Destroy a given connection by closing its socket and release resources occupied by it.
@@ -154,36 +98,11 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_connected_mutex);
 
     /**
-     * Stop listening by closing all listening sockets.
-     */
-    void StopListening();
-
-    /**
      * This is signaled when network activity should cease.
-     * A pointer to it is saved in `m_i2p_sam_session`, so make sure that
-     * the lifetime of `interruptNet` is not shorter than
-     * the lifetime of `m_i2p_sam_session`.
      */
     CThreadInterrupt interruptNet;
 
-protected:
-
-    /**
-     * During some tests mocked sockets are created outside of `SockMan`, make it
-     * possible to add those so that send/recv can be exercised.
-     * @param[in] id Connection id to add.
-     * @param[in,out] sock Socket to associate with the added connection.
-     */
-    void TestOnlyAddExistentConnection(Id id, std::unique_ptr<Sock>&& sock)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_connected_mutex);
-
 private:
-
-    /**
-     * Cap on the size of `m_unused_i2p_sessions`, to ensure it does not
-     * unexpectedly use too much memory.
-     */
-    static constexpr size_t MAX_UNUSED_I2P_SESSIONS_SIZE{10};
 
     //
     // Pure virtual functions must be implemented by children classes.
@@ -273,25 +192,11 @@ private:
     virtual void EventIOLoopCompletedForAll();
 
     /**
-     * Be notified of a change in the state of the I2P connectivity.
-     * The default behavior, implemented by `SockMan`, is to ignore this event.
-     * @param[in] addr The address we started or stopped listening on.
-     * @param[in] new_status New status.
-     */
-    virtual void EventI2PStatus(const CService& addr, I2PStatus new_status);
-
-    /**
-     * The sockets used by a connection - a data socket and an optional I2P session socket.
+     * The sockets used by a connection.
      */
     struct ConnectionSockets {
         explicit ConnectionSockets(std::unique_ptr<Sock>&& s)
             : sock{std::move(s)}
-        {
-        }
-
-        explicit ConnectionSockets(std::shared_ptr<Sock>&& s, std::unique_ptr<i2p::sam::Session>&& sess)
-            : sock{std::move(s)},
-              i2p_transient_session{std::move(sess)}
         {
         }
 
@@ -308,16 +213,6 @@ private:
          * @see https://github.com/bitcoin/bitcoin/issues/21744 for details.
          */
         std::shared_ptr<Sock> sock;
-
-        /**
-         * When transient I2P sessions are used, then each connection has its own session, otherwise
-         * all connections use the session from `m_i2p_sam_session` and share the same I2P address.
-         * I2P sessions involve a data/transport socket (in `sock`) and a control socket
-         * (in `i2p_transient_session`). For transient sessions, once the data socket `sock` is
-         * closed, the control socket is not going to be used anymore and would be just taking
-         * resources. Storing it here makes its deletion together with `sock` automatic.
-         */
-        std::unique_ptr<i2p::sam::Session> i2p_transient_session;
     };
 
     /**
@@ -342,13 +237,6 @@ private:
                            Sock::EqualSharedPtrSock>
             ids_per_sock;
     };
-
-    /**
-     * Accept incoming I2P connections in a loop and call
-     * `EventNewConnectionAccepted()` for each new connection.
-     */
-    void ThreadI2PAccept()
-        EXCLUSIVE_LOCKS_REQUIRED(!m_connected_mutex);
 
     /**
      * Check connected and listening sockets for IO readiness and process them accordingly.
@@ -418,32 +306,6 @@ private:
      * Thread that sends to and receives from sockets and accepts connections.
      */
     std::thread m_thread_socket_handler;
-
-    /**
-     * Thread that accepts incoming I2P connections in a loop, can be stopped via `interruptNet`.
-     */
-    std::thread m_thread_i2p_accept;
-
-    /**
-     * Mutex protecting m_i2p_sam_sessions.
-     */
-    Mutex m_unused_i2p_sessions_mutex;
-
-    /**
-     * A pool of created I2P SAM transient sessions that should be used instead
-     * of creating new ones in order to reduce the load on the I2P network.
-     * Creating a session in I2P is not cheap, thus if this is not empty, then
-     * pick an entry from it instead of creating a new session. If connecting to
-     * a host fails, then the created session is put to this pool for reuse.
-     */
-    std::queue<std::unique_ptr<i2p::sam::Session>> m_unused_i2p_sessions GUARDED_BY(m_unused_i2p_sessions_mutex);
-
-    /**
-     * I2P SAM session.
-     * Used to accept incoming and make outgoing I2P connections from a persistent
-     * address.
-     */
-    std::unique_ptr<i2p::sam::Session> m_i2p_sam_session;
 
     /**
      * List of listening sockets.
