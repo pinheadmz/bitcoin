@@ -1109,25 +1109,20 @@ bool InitHTTPServer()
     }
 
     LogDebug(BCLog::HTTP, "Initialized HTTP server");
-    int workQueueDepth = std::max((long)gArgs.GetIntArg("-rpcworkqueue", DEFAULT_HTTP_WORKQUEUE), 1L);
-    LogDebug(BCLog::HTTP, "creating work queue of depth %d", workQueueDepth);
 
-    g_work_queue = std::make_unique<WorkQueue<HTTPClosure>>(workQueueDepth);
-
+    g_max_queue_depth = std::max((long)gArgs.GetIntArg("-rpcworkqueue", DEFAULT_HTTP_WORKQUEUE), 1L);
+    LogDebug(BCLog::HTTP, "set work queue of depth %d\n", g_max_queue_depth);
+ 
     return true;
 }
-
-static std::vector<std::thread> g_thread_http_workers;
 
 void StartHTTPServer()
 {
     int rpcThreads = std::max((long)gArgs.GetIntArg("-rpcthreads", DEFAULT_HTTP_THREADS), 1L);
     LogInfo("Starting HTTP server with %d worker threads", rpcThreads);
-    g_http_server->StartSocketsThreads();
+    g_threadpool_http.Start(rpcThreads);
 
-    for (int i = 0; i < rpcThreads; i++) {
-        g_thread_http_workers.emplace_back(HTTPWorkQueueRun, g_work_queue.get(), i);
-    }
+    g_http_server->StartSocketsThreads();
 }
 
 void InterruptHTTPServer()
@@ -1137,22 +1132,18 @@ void InterruptHTTPServer()
         // Reject all new requests
         g_http_server->SetRequestHandler(RejectAllRequests);
     }
-    if (g_work_queue) {
-        // Stop workers, killing requests we haven't processed or responded to yet
-        g_work_queue->Interrupt();
-    }
+
+    // Interrupt pool after disabling requests
+    g_threadpool_http.Interrupt();
 }
 
 void StopHTTPServer()
 {
     LogDebug(BCLog::HTTP, "Stopping HTTP server");
-    if (g_work_queue) {
-        LogDebug(BCLog::HTTP, "Waiting for HTTP worker threads to exit");
-        for (auto& thread : g_thread_http_workers) {
-            thread.join();
-        }
-        g_thread_http_workers.clear();
-    }
+    
+    LogDebug(BCLog::HTTP, "Waiting for HTTP worker threads to exit\n");
+    g_threadpool_http.Stop();
+
     if (g_http_server) {
         // Disconnect clients as their remaining responses are flushed
         g_http_server->DisconnectAllClients();
