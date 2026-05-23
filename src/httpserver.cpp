@@ -67,8 +67,6 @@ struct HTTPPathHandler
 /** HTTP module state */
 
 static std::unique_ptr<http_bitcoin::HTTPServer> g_http_server{nullptr};
-//! List of subnets to allow RPC connections from
-static std::vector<CSubNet> rpc_allow_subnets;
 //! Handlers for (sub)paths
 static GlobalMutex g_httppathhandlers_mutex;
 static std::vector<HTTPPathHandler> pathHandlers GUARDED_BY(g_httppathhandlers_mutex);
@@ -77,23 +75,24 @@ static std::vector<HTTPPathHandler> pathHandlers GUARDED_BY(g_httppathhandlers_m
 static ThreadPool g_threadpool_http("http");
 static int g_max_queue_depth{100};
 
+namespace http_bitcoin {
 /** Check if a network address is allowed to access the HTTP server */
-static bool ClientAllowed(const CNetAddr& netaddr)
+bool HTTPServer::ClientAllowed(const CNetAddr& netaddr)
 {
     if (!netaddr.IsValid())
         return false;
-    for(const CSubNet& subnet : rpc_allow_subnets)
+    for(const CSubNet& subnet : m_allow_subnets)
         if (subnet.Match(netaddr))
             return true;
     return false;
 }
 
 /** Initialize ACL list for HTTP server */
-static bool InitHTTPAllowList()
+bool HTTPServer::InitHTTPAllowList()
 {
-    rpc_allow_subnets.clear();
-    rpc_allow_subnets.emplace_back(LookupHost("127.0.0.1", false).value(), 8);  // always allow IPv4 local subnet
-    rpc_allow_subnets.emplace_back(LookupHost("::1", false).value());  // always allow IPv6 localhost
+    m_allow_subnets.clear();
+    m_allow_subnets.emplace_back(LookupHost("127.0.0.1", false).value(), 8);  // always allow IPv4 local subnet
+    m_allow_subnets.emplace_back(LookupHost("::1", false).value());  // always allow IPv6 localhost
     for (const std::string& strAllow : gArgs.GetArgs("-rpcallowip")) {
         const CSubNet subnet{LookupSubNet(strAllow)};
         if (!subnet.IsValid()) {
@@ -102,14 +101,15 @@ static bool InitHTTPAllowList()
                 CClientUIInterface::MSG_ERROR);
             return false;
         }
-        rpc_allow_subnets.push_back(subnet);
+        m_allow_subnets.push_back(subnet);
     }
     std::string strAllowed;
-    for (const CSubNet& subnet : rpc_allow_subnets)
+    for (const CSubNet& subnet : m_allow_subnets)
         strAllowed += subnet.ToString() + " ";
     LogDebug(BCLog::HTTP, "Allowing HTTP connections from: %s\n", strAllowed);
     return true;
 }
+} // namespace http_bitcoin
 
 /** HTTP request method as string - use for logging only */
 std::string_view RequestMethodString(HTTPRequestMethod m)
@@ -127,14 +127,6 @@ std::string_view RequestMethodString(HTTPRequestMethod m)
 
 static void MaybeDispatchRequestToWorker(std::shared_ptr<HTTPRequest> hreq)
 {
-    // Early address-based allow check
-    if (!ClientAllowed(hreq->GetPeer())) {
-        LogDebug(BCLog::HTTP, "HTTP request from %s rejected: Client network is not allowed RPC access\n",
-                 hreq->GetPeer().ToStringAddrPort());
-        hreq->WriteReply(HTTP_FORBIDDEN);
-        return;
-    }
-
     // Early reject unknown HTTP methods
     if (hreq->GetRequestMethod() == HTTPRequestMethod::UNKNOWN) {
         LogDebug(BCLog::HTTP, "HTTP request from %s rejected: Unknown HTTP request method\n",
@@ -793,6 +785,14 @@ std::unique_ptr<Sock> HTTPServer::AcceptConnection(const Sock& listen_sock, CSer
                  "Unknown socket family");
     }
 
+    // Early address-based allow check
+    if (!ClientAllowed(addr)) {
+        LogDebug(BCLog::HTTP, "HTTP request from %s rejected: Client network is not allowed RPC access\n",
+                 addr.ToStringAddrPort());
+        // Socket destroyed, connection aborted
+        return {};
+    }
+
     return sock;
 }
 
@@ -1201,12 +1201,12 @@ bool HTTPRemoteClient::MaybeSendBytesFromBuffer()
 
 bool InitHTTPServer()
 {
-    if (!InitHTTPAllowList()) {
-        return false;
-    }
-
     // Create HTTPServer
     g_http_server = std::make_unique<HTTPServer>(MaybeDispatchRequestToWorker);
+
+    if (!g_http_server->InitHTTPAllowList()) {
+        return false;
+    }
 
     g_http_server->SetServerTimeout(std::chrono::seconds(gArgs.GetIntArg("-rpcservertimeout", DEFAULT_HTTP_SERVER_TIMEOUT)));
 
