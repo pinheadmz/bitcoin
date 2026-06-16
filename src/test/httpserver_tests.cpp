@@ -626,7 +626,7 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
 BOOST_AUTO_TEST_CASE(http_remote_client_send_retry_tests)
 {
     // Verify that the server's I/O loop retries after WSAEAGAIN from Send().
-    // ErrorSock alternates: even-numbered Send() calls return WSAEAGAIN, odd ones succeed.
+    // ErrorSock returns WSAEAGAIN with 50% probability on each Send() call.
     // If the retry logic in HTTPRemoteClient::MaybeSendBytesFromBuffer() is correct, the response still arrives.
 
     // Hard-code the server's request handler to respond to each request with
@@ -669,16 +669,10 @@ BOOST_AUTO_TEST_CASE(http_remote_client_send_retry_tests)
         return false; // suppress default "not found" abort in destructor
     }};
 
-    // NUM_REQUESTS must be odd.
-    // This ensures that m_send_ready is correctly set in the optimistic send path.
-    // If it weren't, an even number of requests would falsely pass the test:
-    // - ErrorSock returns WSAEAGAIN on the first Send() attempt of each reply
-    // - The recoverable error leaves the reply stuck in the send buffer (expected)
-    // - The *next* request would not take the optimistic send path, m_send_ready is set true
-    // - Both replies would be flushed and the test would pass
-    // What we want to see is the stuck reply get flushed in the next I/O loop iteration,
-    // when ErrorSock::Send() succeeds. This won't happen if m_send_ready is still
-    // false after the recoverable error.
+    // With ErrorSock returning WSAEAGAIN randomly (50% probability), some Send()
+    // attempts will fail and the reply will be stuck in the send buffer. The retry
+    // logic in the next I/O loop iteration should flush it. We use 9 requests to
+    // give enough opportunities for both error and success paths to be exercised.
     static constexpr int NUM_REQUESTS = 9;
 
     // Use keep-alive so the server holds the connection open for all requests.

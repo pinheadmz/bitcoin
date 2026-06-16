@@ -1137,6 +1137,12 @@ bool HTTPRemoteClient::MaybeSendBytesFromBuffer()
             const int err{WSAGetLastError()};
             if (!IOErrorIsPermanent(err)) {
                 // The error can be safely ignored, try the send again on the next I/O loop.
+                LogDebug(
+                    BCLog::HTTP,
+                    "Transient send error for client %s (id=%lld): %s — will retry\n",
+                    m_origin,
+                    m_id,
+                    NetworkErrorString(err));
                 m_send_ready = true;
                 m_connection_busy = true;
                 return true;
