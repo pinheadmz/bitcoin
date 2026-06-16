@@ -391,6 +391,22 @@ void DynSock::Pipe::PushNetMsg(const std::string& type, Args&&... payload)
     m_cond.notify_all();
 }
 
+/**
+ * A mocked Sock derived from DynSock whose Send() alternates between a transient
+ * error (WSAEAGAIN) on even-numbered calls and a normal DynSock::Send() on
+ * odd-numbered calls. Useful for testing "try again" logic around non-blocking
+ * send failures.
+ */
+class ErrorSock : public DynSock
+{
+public:
+    explicit ErrorSock(std::shared_ptr<Pipes> pipes) : DynSock{std::move(pipes)} {}
+
+    ssize_t Send(const void* buf, size_t len, int flags) const override;
+
+    mutable int m_send_counter{0};
+};
+
 std::vector<NodeEvictionCandidate> GetRandomNodeEvictionCandidates(int n_candidates, FastRandomContext& random_context);
 
 #endif // BITCOIN_TEST_UTIL_NET_H

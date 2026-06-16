@@ -5,6 +5,7 @@
 #include <httpserver.h>
 #include <rpc/protocol.h>
 #include <test/util/common.h>
+#include <test/util/logging.h>
 #include <test/util/setup_common.h>
 #include <util/string.h>
 
@@ -596,6 +597,95 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
     // Close connection
     BOOST_REQUIRE(server.CloseConnection(*client));
     // Close all listening sockets
+    server.StopListening();
+}
+
+BOOST_AUTO_TEST_CASE(http_remote_client_send_retry_tests)
+{
+    // Verify that the server's I/O loop retries after WSAEAGAIN from Send().
+    // ErrorSock alternates: even-numbered Send() calls return WSAEAGAIN, odd ones succeed.
+    // If the retry logic in HTTPRemoteClient::MaybeSendBytesFromBuffer() is correct, the response still arrives.
+
+    // Hard-code the server's request handler to respond to each request with
+    // an incremented block count. 
+    // Also save a pointer to the client for disconnection at the end of the test.
+    std::shared_ptr<HTTPRemoteClient> client;
+    int height{0};
+    HTTPServer server{[&](std::unique_ptr<HTTPRequest>&& req) {
+        req->WriteReply(HTTP_OK, strprintf("height:%d\n", height++));
+        if (!client) {
+            client = req->m_client;
+        }
+    }};
+
+    // Simpler server startup than the last test
+    CService addr_bind{Lookup("0.0.0.0", /*portDefault=*/0, /*fAllowLookup=*/false).value()};
+    BOOST_REQUIRE(server.BindAndStartListening(addr_bind));
+    server.StartSocketsThreads();
+
+    // Connect an ErrorSock as mock client with no preloaded data and get a handle on the I/O pipes
+    std::shared_ptr<ErrorSock::Pipes> mock_client_socket_pipes{ConnectClient({}, /*alternate_send_errors=*/true)};
+
+    // Wait up to a minute to find and connect the client in the I/O loop
+    int attempts{6000};
+    while (server.GetConnectionsCount() < 1) {
+        std::this_thread::sleep_for(10ms);
+        BOOST_REQUIRE(--attempts > 0);
+    }
+
+    // Count how many times the server logs a successful send. Because requests
+    // arrive in bursts, the I/O loop will combine some replies into a single Send().
+    // We want to ensure that this connection was kept alive, and the client
+    // and server exchanged data back and forth more than once.
+    int send_log_count{0};
+    DebugLogHelper count_send_logs{"bytes to client", [&](const std::string* line) {
+        if (line) {
+            ++send_log_count;
+            return false; // keep counting; don't stop at first match
+        }
+        return false; // suppress default "not found" abort in destructor
+    }};
+
+    // NUM_REQUESTS must be odd.
+    // TODO: Explain rationale when it becomes required to pass the test
+    // in a future commit.
+    static constexpr int NUM_REQUESTS = 9;
+
+    // Fire off the requests with increasing delays so some requests arrive
+    // within the same I/O loop iteration and some get processed on their own.
+    for (int i = 0; i < NUM_REQUESTS; i++) {
+        mock_client_socket_pipes->recv.PushBytes(full_request.data(), full_request.size());
+        std::this_thread::sleep_for(2ms * i);
+    }
+
+    // Wait up to one minute for last reply
+    std::string actual;
+    char buf[0x10000] = {};
+    attempts = 1000;
+    while (attempts > 0)
+    {
+        ssize_t bytes_read = mock_client_socket_pipes->send.GetBytes(buf, sizeof(buf), 0);
+        if (bytes_read > 0) {
+            actual.append(buf, bytes_read);
+            if (actual.find(strprintf("height:%d", NUM_REQUESTS - 1)) != std::string::npos) {
+                break;
+            }
+        }
+        std::this_thread::sleep_for(10ms);
+        --attempts;
+    }
+
+    // Replies came in more than one Send()
+    BOOST_CHECK_GT(send_log_count, 1);
+
+    // All replies were received
+    for (int i = 0; i < NUM_REQUESTS; i++) {
+        BOOST_REQUIRE(actual.find(strprintf("height:%d", i)) != std::string::npos);
+    }
+
+    server.InterruptNet();
+    server.JoinSocketsThreads();
+    BOOST_REQUIRE(server.CloseConnection(*client));
     server.StopListening();
 }
 

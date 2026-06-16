@@ -257,8 +257,9 @@ public:
     /**
      * Connect to the socket with a mock client (a DynSock) and send pre-loaded data.
      * Returns the I/O pipes from the mock client so we can read response data sent to it.
+     * Optionally return an ErrorSock instead, which will set a non-permanent error on every other Send()
      */
-    std::shared_ptr<DynSock::Pipes> ConnectClient(std::span<const std::byte> data);
+    std::shared_ptr<DynSock::Pipes> ConnectClient(std::span<const std::byte> data, bool alternate_send_errors = false);
 
 private:
     //! Save the original value of CreateSock here and restore it when the test ends.
