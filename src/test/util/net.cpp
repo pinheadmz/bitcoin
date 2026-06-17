@@ -431,3 +431,16 @@ DynSock& DynSock::operator=(Sock&&)
     assert(false && "Move of Sock into DynSock not allowed.");
     return *this;
 }
+
+ssize_t ErrorSock::Send(const void* buf, size_t len, int flags) const
+{
+    if (m_send_counter++ % 2 == 0) {
+#ifdef WIN32
+        WSASetLastError(WSAEWOULDBLOCK);
+#else
+        errno = WSAEAGAIN;
+#endif
+        return -1;
+    }
+    return DynSock::Send(buf, len, flags);
+}

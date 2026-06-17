@@ -5,6 +5,7 @@
 #include <httpserver.h>
 #include <rpc/protocol.h>
 #include <test/util/common.h>
+#include <test/util/logging.h>
 #include <test/util/setup_common.h>
 #include <util/string.h>
 
@@ -619,6 +620,104 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
     // Wait for I/O loop to finish, after all connected sockets are closed
     server.JoinSocketsThreads();
     // Close all listening sockets
+    server.StopListening();
+}
+
+BOOST_AUTO_TEST_CASE(http_remote_client_send_retry_tests)
+{
+    // Verify that the server's I/O loop retries after WSAEAGAIN from Send().
+    // ErrorSock alternates: even-numbered Send() calls return WSAEAGAIN, odd ones succeed.
+    // If the retry logic in HTTPRemoteClient::MaybeSendBytesFromBuffer() is correct, the response still arrives.
+
+    // Hard-code the server's request handler to respond to each request with
+    // an incremented block count.
+    std::shared_ptr<HTTPRemoteClient> client;
+    int height{0};
+    HTTPServer server{[&](std::unique_ptr<HTTPRequest>&& req) {
+        req->WriteReply(HTTP_OK, strprintf("height:%d\n", height++));
+    }};
+
+    // Simpler server startup than the last test
+    CService addr_bind{Lookup("0.0.0.0", /*portDefault=*/0, /*fAllowLookup=*/false).value()};
+    BOOST_REQUIRE(server.BindAndStartListening(addr_bind));
+    server.StartSocketsThreads();
+
+    // Connect an ErrorSock as mock client with no preloaded data and get a handle on the I/O pipes
+    std::shared_ptr<ErrorSock::Pipes> mock_client_socket_pipes{ConnectClient({}, /*alternate_send_errors=*/true)};
+
+    // Wait up to a minute to find and connect the client in the I/O loop
+    int attempts{6000};
+    while (server.GetConnectionsCount() < 1) {
+        std::this_thread::sleep_for(10ms);
+        BOOST_REQUIRE(--attempts > 0);
+    }
+
+    // Count how many times the server logs a successful send. Because requests
+    // arrive in bursts, the I/O loop will combine some replies into a single Send().
+    // We want to ensure that this connection was kept alive, and the client
+    // and server exchanged data back and forth more than once.
+    int send_log_count{0};
+    DebugLogHelper count_send_logs{"bytes to client", [&](const std::string* line) {
+        if (line) {
+            ++send_log_count;
+            return false; // keep counting; don't stop at first match
+        }
+        return false; // suppress default "not found" abort in destructor
+    }};
+
+    // NUM_REQUESTS must be odd.
+    // This ensures that m_send_ready is correctly set in the optimistic send path.
+    // If it weren't, an even number of requests would falsely pass the test:
+    // - ErrorSock returns WSAEAGAIN on the first Send() attempt of each reply
+    // - The recoverable error leaves the reply stuck in the send buffer (expected)
+    // - The *next* request would not take the optimistic send path, m_send_ready is set true
+    // - Both replies would be flushed and the test would pass
+    // What we want to see is the stuck reply get flushed in the next I/O loop iteration,
+    // when ErrorSock::Send() succeeds. This won't happen if m_send_ready is still
+    // false after the recoverable error.
+    static constexpr int NUM_REQUESTS = 9;
+
+    // Use keep-alive so the server holds the connection open for all requests.
+    std::string keepalive_request{full_request};
+    keepalive_request.replace(keepalive_request.find("Connection: close"), 17, "Connection: keep-alive");
+
+    // Fire off the requests with increasing delays so some requests arrive
+    // within the same I/O loop iteration and some get processed on their own.
+    for (int i = 0; i < NUM_REQUESTS; i++) {
+        mock_client_socket_pipes->recv.PushBytes(keepalive_request.data(), keepalive_request.size());
+        std::this_thread::sleep_for(2ms * i);
+    }
+
+    // Wait up to one minute for last reply
+    std::string actual;
+    char buf[0x10000] = {};
+    attempts = 1000;
+    while (attempts > 0)
+    {
+        ssize_t bytes_read = mock_client_socket_pipes->send.GetBytes(buf, sizeof(buf), 0);
+        if (bytes_read > 0) {
+            actual.append(buf, bytes_read);
+            if (actual.find(strprintf("height:%d", NUM_REQUESTS - 1)) != std::string::npos) {
+                break;
+            }
+        }
+        std::this_thread::sleep_for(10ms);
+        --attempts;
+    }
+
+    // Replies came in more than one Send()
+    BOOST_CHECK_GT(send_log_count, 1);
+
+    // All replies were received
+    for (int i = 0; i < NUM_REQUESTS; i++) {
+        BOOST_REQUIRE(actual.find(strprintf("height:%d", i)) != std::string::npos);
+    }
+
+    // Close the keep-alive connection
+    server.DisconnectAllClients();
+
+    server.InterruptNet();
+    server.JoinSocketsThreads();
     server.StopListening();
 }
 
