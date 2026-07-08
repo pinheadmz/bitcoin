@@ -740,7 +740,7 @@ util::Expected<void, std::string> HTTPServer::BindAndStartListening(const CServi
     }
 
     // Listen for incoming connections
-    if (sock->Listen(SOMAXCONN) == SOCKET_ERROR) {
+    if (sock->Listen(MAX_HTTP_CONNECTIONS) == SOCKET_ERROR) {
         return util::Unexpected{strprintf("Cannot listen on %s: %s",
                                           to.ToStringAddrPort(),
                                           NetworkErrorString(WSAGetLastError()))};
@@ -774,6 +774,11 @@ std::unique_ptr<Sock> HTTPServer::AcceptConnection(const Sock& listen_sock, CSer
 {
     // Make sure we only operate on our own listening sockets
     Assume(std::ranges::any_of(m_listen, [&](const auto& sock) { return sock.get() == &listen_sock; }));
+
+    if (GetConnectionsCount() >= MAX_HTTP_CONNECTIONS) {
+        LogDebug(BCLog::HTTP, "Cannot accept new connection: would exceed limit of %d", MAX_HTTP_CONNECTIONS);
+        return {};   
+    }
 
     sockaddr_storage storage;
     socklen_t len{sizeof(storage)};

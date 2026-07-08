@@ -40,6 +40,12 @@ static const int DEFAULT_HTTP_THREADS=16;
  */
 static const int DEFAULT_HTTP_WORKQUEUE=64;
 
+/**
+ * Maximum number of connected HTTP clients, also used to limit the listen() "backlog",
+ * i.e. number of pending connections the kernel will queue for the listening socket.
+ */
+static const size_t MAX_HTTP_CONNECTIONS = 128;
+
 static const int DEFAULT_HTTP_SERVER_TIMEOUT=30;
 
 enum class HTTPRequestMethod {
