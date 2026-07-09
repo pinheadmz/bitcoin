@@ -573,50 +573,55 @@ class HTTPBasicsTest (BitcoinTestFramework):
     def check_connection_limit(self):
         self.log.info("Check connection limits")
 
-        # Restore the default -rpcservertimeout=30
-        self.restart_node(0)
+        for comment, extra_args, limit in [
+            ("default (128)", [], 128),
+            ("-rpcmaxconnections=18", ["-rpcmaxconnections=18"], 18)
+        ]:
+            self.log.info(f"Using connection limit: {comment}")
+            self.restart_node(0, extra_args=extra_args)
 
-        # Close the persistent HTTP connection to this node by replacing it with
-        # a new AuthServiceProxy, reducing HTTPServer::GetConnectionsCount() to 0.
-        # The new AuthServiceProxy won't actually open an HTTP connection until
-        # it needs to send an RPC (for example, to stop the node at the end of the test).
-        self.node._rpc = self.node.create_new_rpc_connection(mode="AUTHPROXY")
+            # Close the persistent HTTP connection to this node by replacing it with
+            # a new AuthServiceProxy, reducing HTTPServer::GetConnectionsCount() to 0.
+            # The new AuthServiceProxy won't actually open an HTTP connection until
+            # it needs to send an RPC (for example, to stop the node at the end of the test).
+            self.node._rpc = self.node.create_new_rpc_connection(mode="AUTHPROXY")
 
-        MAX_HTTP_CONNECTIONS = 128
-        connections = []
+            MAX_HTTP_CONNECTIONS = limit
+            connections = []
 
-        # No errors logged
-        with self.node.assert_debug_log(
-            expected_msgs = [f"method=invalidrpc_{i}" for i in range(1, MAX_HTTP_CONNECTIONS + 1)]
-        ):
-            # Fill connection slots
-            for i in range(1, MAX_HTTP_CONNECTIONS + 1):
+            # No errors logged
+            with self.node.assert_debug_log(
+                expected_msgs = [f"method=invalidrpc_{i}" for i in range(1, MAX_HTTP_CONNECTIONS + 1)]
+            ):
+                # Fill connection slots
+                for i in range(1, MAX_HTTP_CONNECTIONS + 1):
+                    conn = BitcoinHTTPConnection(self.node)
+                    # Each client makes a unique request so it's easy to find in the log
+                    conn.post('/', f'{{"method": "invalidrpc_{i}"}}', connection_header='keep-alive').read()
+                    connections.append(conn)
+
+            # Over the limit, expect rejection
+            with self.node.assert_debug_log(
+                expected_msgs = [],
+                unexpected_msgs = ["method=never_accepted"]
+            ):
                 conn = BitcoinHTTPConnection(self.node)
-                # Each client makes a unique request so it's easy to find in the log
-                conn.post('/', f'{{"method": "invalidrpc_{i}"}}', connection_header='keep-alive').read()
-                connections.append(conn)
+                # Only try for a few seconds. The default client timeout is so long that the
+                # original connections (still idle) will start to hit the default rpcservertimeout=30
+                # and get disconnected, opening new connection slots on the server.
+                # Then this connection would unexpectedly succeed.
+                conn.set_timeout(5)
+                try:
+                    conn.post('/', '{"method": "never_accepted"}', connection_header='keep-alive').read()
+                    assert False, "Connection succeeded unexpectedly"
+                except TimeoutError:
+                    pass
 
-        # Over the limit, expect rejection
-        with self.node.assert_debug_log(
-            expected_msgs = [],
-            unexpected_msgs = ["method=never_accepted"]
-        ):
-            conn = BitcoinHTTPConnection(self.node)
-            # Only try for a few seconds. The default client timeout is so long that the
-            # original 128 connections (still idle) will start to hit the default rpcservertimeout=30
-            # and get disconnected, opening new connection slots on the server.
-            # Then this connection would unexpectedly succeed.
-            conn.set_timeout(5)
-            try:
-                conn.post('/', '{"method": "never_accepted"}', connection_header='keep-alive').read()
-                assert False, "Connection succeeded unexpectedly"
-            except TimeoutError:
-                pass
-
-        # Original 128 clients are still connected
-        assert_equal(len(connections), MAX_HTTP_CONNECTIONS)
-        for client in connections:
-            assert not client.sock_closed()
+            # Original clients are still connected, close them now to clean up
+            assert_equal(len(connections), MAX_HTTP_CONNECTIONS)
+            for client in connections:
+                assert not client.sock_closed()
+                client.close_sock()
 
 
 if __name__ == '__main__':
