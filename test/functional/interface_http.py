@@ -69,15 +69,18 @@ class BitcoinHTTPConnection:
     def get(self, path, connection_header=None):
         return self._request('GET', path, '', connection_header)
 
-    def send_raw(self, data):
-        self.conn.sock.sendall(data)
-
-    def post_raw(self, path, data):
+    def prepare_raw_post(self, path, data):
         data_bytes = data.encode("utf-8")
         req = f"POST {path} HTTP/1.1\r\n"
         req += f'Authorization: Basic {str_to_b64str(self.authpair)}\r\n'
         req += f'Content-Length: {len(data_bytes)}\r\n\r\n'
-        self.send_raw(req.encode("ascii") + data_bytes)
+        return req.encode("ascii") + data_bytes
+
+    def send_raw(self, data):
+        self.conn.sock.sendall(data)
+
+    def post_raw(self, path, data):
+        self.send_raw(self.prepare_raw_post(path, data))
 
     def recv_raw(self):
         '''
@@ -137,6 +140,7 @@ class HTTPBasicsTest (BitcoinTestFramework):
         self.check_invalid_http_version()
         self.check_whitespace_in_headers()
         self.check_connection_limit()
+        self.check_request_limit()
 
 
     def check_default_connection(self):
@@ -622,6 +626,61 @@ class HTTPBasicsTest (BitcoinTestFramework):
             for client in connections:
                 assert not client.sock_closed()
                 client.close_sock()
+
+
+    def check_request_limit(self):
+        self.log.info("Checking per-client request limit")
+        LIMIT = 8
+
+        self.restart_node(0, extra_args=[f"-rpcworkqueue={LIMIT}"])
+        conn = BitcoinHTTPConnection(self.node)
+        tip_height = self.node.getblockcount()
+
+        # Send all requests at once without reading any responses
+        requests = bytes()
+        # The first RPC waitforblockheight will get removed from the client request queue
+        # and passed to a worker thread. It will stop the request queue from being
+        # processed until the wait is complete and the RPC is replied to.
+        requests += conn.prepare_raw_post('/', f'{{"method": "waitforblockheight", "params": [{tip_height + 1}]}}')
+        # Fill the request queue.
+        # The rest of the HTTP paths don't matter because we only need to see them
+        # in the log as the server reads them off the wire. We don't look for the
+        # methods in the log because those are logged by [rpc] and we only care about [http].
+        # We expect the server to stop reading at `limit` even though the client has sent more requests.
+        for i in range(LIMIT):
+            requests += conn.prepare_raw_post(f'/{i}', '{"method": "getblockcount"}')
+        # These requests should stay in the kernel buffer
+        requests += conn.prepare_raw_post('/extra', '{"method": "getnetworkinfo"}')
+        requests += conn.prepare_raw_post('/', '{"method": "echo", "params": ["furry"]}')
+
+        with self.node.assert_debug_log(
+            expected_msgs = [f"Received a POST request for /{i}" for i in range(LIMIT)],
+            unexpected_msgs = [
+                "Received a POST request for /extra",
+                "method=echo"
+            ],
+            timeout=10
+        ):
+            conn.send_raw(requests)
+
+        # When the next block is generated, the blocking request will be cleared,
+        # all the remaining requests will be handled and the last request will
+        # finally be read off the socket by the server.
+        with self.node.assert_debug_log(
+            expected_msgs = [
+                "Received a POST request for /extra",
+                "method=echo"
+            ],
+            timeout=10
+        ):
+            self.generate(self.node, 1)
+
+        # Wait for the last request in the batch (which was valid) to be processed
+        replies = ""
+        while "furry" not in replies:
+            replies += conn.recv_raw().decode()
+        # All the invalid HTTP paths were responded to
+        assert_equal(LIMIT + 1, replies.count("404"))
 
 
 if __name__ == '__main__':

@@ -860,6 +860,13 @@ void HTTPServer::SocketHandlerConnected(const IOReadiness& io_readiness) const
             }
         }
 
+        // Stop reading from this client until its request queue drains.
+        // Data from the client will stay in the socket buffer
+        // and eventually trigger TCP backpressure.
+        if (client->m_req_queue.size() >= static_cast<size_t>(g_max_queue_depth)) {
+            recv_ready = false;
+        }
+
         if (recv_ready || err_ready) {
             std::byte buf[0x10000]; // typical socket buffer is 8K-64K
 
@@ -991,8 +998,8 @@ void HTTPServer::ThreadSocketHandler()
 
 void HTTPServer::MaybeDispatchRequestsFromClient(const std::shared_ptr<HTTPRemoteClient>& client) const
 {
-    // Try reading (potentially multiple) HTTP requests from the buffer
-    while (!client->m_recv_buffer.empty()) {
+    // Try reading (potentially multiple) HTTP requests from the buffer, up to the request queue limit
+    while (!client->m_recv_buffer.empty() && client->m_req_queue.size() < static_cast<size_t>(g_max_queue_depth)) {
         // Create a new request object and try to fill it with data from the receive buffer
         auto req = std::make_unique<HTTPRequest>(client);
         try {
