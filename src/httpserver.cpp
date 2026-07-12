@@ -55,13 +55,17 @@ using http_bitcoin::HTTPRequest;
 
 struct HTTPPathHandler
 {
-    HTTPPathHandler(std::string _prefix, bool _exactMatch, HTTPRequestHandler _handler):
-        prefix(_prefix), exactMatch(_exactMatch), handler(_handler)
+    HTTPPathHandler(std::string _prefix, bool _exactMatch, HTTPRequestHandler _handler,
+                    http_bitcoin::HTTPPreBodyAuthFn _auth_check = nullptr, std::string _realm = {})
+        : prefix(std::move(_prefix)), exactMatch(_exactMatch), handler(std::move(_handler)),
+          auth_check(std::move(_auth_check)), realm(std::move(_realm))
     {
     }
     std::string prefix;
     bool exactMatch;
     HTTPRequestHandler handler;
+    http_bitcoin::HTTPPreBodyAuthFn auth_check;
+    std::string realm;
 };
 
 /** HTTP module state */
@@ -238,11 +242,12 @@ static std::vector<std::pair<std::string, uint16_t>> GetBindAddresses()
     return endpoints;
 }
 
-void RegisterHTTPHandler(const std::string &prefix, bool exactMatch, const HTTPRequestHandler &handler)
+void RegisterHTTPHandler(const std::string &prefix, bool exactMatch, const HTTPRequestHandler &handler,
+                         http_bitcoin::HTTPPreBodyAuthFn auth_check, std::string realm)
 {
     LogDebug(BCLog::HTTP, "Registering HTTP handler for %s (exactmatch %d)\n", prefix, exactMatch);
     LOCK(g_httppathhandlers_mutex);
-    pathHandlers.emplace_back(prefix, exactMatch, handler);
+    pathHandlers.emplace_back(prefix, exactMatch, handler, std::move(auth_check), std::move(realm));
 }
 
 void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch)
@@ -996,6 +1001,16 @@ void HTTPServer::ThreadSocketHandler()
     }
 }
 
+static void DispatchAuthRejection(std::unique_ptr<HTTPRequest> req, std::string realm)
+{
+    g_threadpool_http.Submit([req = std::move(req), realm = std::move(realm)]() {
+        UninterruptibleSleep(std::chrono::milliseconds{250});
+        req->WriteHeader("WWW-Authenticate", "Basic realm=\"" + realm + "\"");
+        req->WriteReply(HTTP_UNAUTHORIZED);
+        req->m_client->m_disconnect = true;
+    });
+}
+
 void HTTPServer::MaybeDispatchRequestsFromClient(const std::shared_ptr<HTTPRemoteClient>& client) const
 {
     // Try reading (potentially multiple) HTTP requests from the buffer, up to the request queue limit
@@ -1015,6 +1030,14 @@ void HTTPServer::MaybeDispatchRequestsFromClient(const std::shared_ptr<HTTPRemot
 
             req->WriteReply(HTTP_CONTENT_TOO_LARGE);
             client->m_disconnect = true;
+            return;
+        } catch (const http_bitcoin::AuthError& e) {
+            LogDebug(
+                BCLog::HTTP,
+                "HTTP auth failure from client %s (id=%llu)",
+                client->m_origin,
+                client->m_id);
+            DispatchAuthRejection(std::move(req), e.realm);
             return;
         } catch (const std::runtime_error& e) {
             LogDebug(
@@ -1127,6 +1150,28 @@ bool HTTPRemoteClient::ReadRequest(HTTPRequest& req)
 
     if (!req.LoadControlData(reader)) return false;
     if (!req.LoadHeaders(reader)) return false;
+
+    // Early auth check - before reading up to 32 MiB body
+    {
+        http_bitcoin::HTTPPreBodyAuthFn auth_fn;
+        std::string auth_realm;
+        {
+            LOCK(g_httppathhandlers_mutex);
+            for (const auto& h : pathHandlers) {
+                bool match = h.exactMatch ? (req.m_target == h.prefix)
+                                          : req.m_target.starts_with(h.prefix);
+                if (match) {
+                    auth_fn = h.auth_check;
+                    auth_realm = h.realm;
+                    break;
+                }
+            }
+        }
+        if (auth_fn && !auth_fn(req)) {
+            throw http_bitcoin::AuthError(std::move(auth_realm));
+        }
+    }
+
     if (!req.LoadBody(reader)) return false;
 
     // Remove the bytes read out of the buffer.

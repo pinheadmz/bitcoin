@@ -30,9 +30,6 @@ using http_bitcoin::HTTPRequest;
 using util::SplitString;
 using util::TrimStringView;
 
-/** WWW-Authenticate to present with 401 Unauthorized response */
-static const char* WWW_AUTH_HEADER_DATA = "Basic realm=\"jsonrpc\"";
-
 /* List of -rpcauth values */
 static std::vector<std::vector<std::string>> g_rpcauth;
 /* RPC Auth Whitelist */
@@ -201,29 +198,17 @@ static void HTTPReq_JSONRPC(const std::any& context, HTTPRequest* req)
         req->WriteReply(HTTP_BAD_METHOD, "JSONRPC server handles only POST requests");
         return;
     }
-    // Check authorization
-    std::pair<bool, std::string> authHeader = req->GetHeader("authorization");
-    if (!authHeader.first) {
-        req->WriteHeader("WWW-Authenticate", WWW_AUTH_HEADER_DATA);
-        req->WriteReply(HTTP_UNAUTHORIZED);
-        return;
-    }
-
     JSONRPCRequest jreq;
     jreq.context = context;
     jreq.peerAddr = req->GetPeer().ToStringAddrPort();
     jreq.URI = req->GetURI();
-    if (!RPCAuthorized(authHeader.second, jreq.authUser)) {
-        LogWarning("ThreadRPCServer incorrect password attempt from %s", jreq.peerAddr);
-
-        /* Deter brute-forcing
-           If this results in a DoS the user really
-           shouldn't have their RPC port exposed. */
-        UninterruptibleSleep(std::chrono::milliseconds{250});
-
-        req->WriteHeader("WWW-Authenticate", WWW_AUTH_HEADER_DATA);
-        req->WriteReply(HTTP_UNAUTHORIZED);
-        return;
+    // Authorization was verified before body was loaded (early auth check).
+    // Re-run RPCAuthorized here only to populate jreq.authUser for whitelist checks.
+    {
+        std::pair<bool, std::string> authHeader = req->GetHeader("authorization");
+        if (authHeader.first) {
+            RPCAuthorized(authHeader.second, jreq.authUser);
+        }
     }
 
     // Generate reply
@@ -344,9 +329,15 @@ bool StartHTTPRPC(const std::any& context)
         return false;
 
     auto handle_rpc = [context](HTTPRequest* req, const std::string&) { return HTTPReq_JSONRPC(context, req); };
-    RegisterHTTPHandler("/", true, handle_rpc);
+    auto auth_check = [](const http_bitcoin::HTTPRequest& req) -> bool {
+        auto auth = req.m_headers.FindFirst("authorization");
+        if (!auth) return false;
+        std::string user;
+        return RPCAuthorized(*auth, user);
+    };
+    RegisterHTTPHandler("/", true, handle_rpc, auth_check, "jsonrpc");
     if (g_wallet_init_interface.HasWalletSupport()) {
-        RegisterHTTPHandler("/wallet/", false, handle_rpc);
+        RegisterHTTPHandler("/wallet/", false, handle_rpc, auth_check, "jsonrpc");
     }
     return true;
 }

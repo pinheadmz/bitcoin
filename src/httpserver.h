@@ -57,6 +57,8 @@ enum class HTTPRequestMethod {
 
 namespace http_bitcoin {
     class HTTPRequest;
+    struct AuthError;
+    using HTTPPreBodyAuthFn = std::function<bool(const HTTPRequest&)>;
 }
 /** Handler for requests to a certain HTTP path */
 using HTTPRequestHandler = std::function<void(http_bitcoin::HTTPRequest* req, const std::string&)>;
@@ -65,7 +67,8 @@ using HTTPRequestHandler = std::function<void(http_bitcoin::HTTPRequest* req, co
  * If multiple handlers match a prefix, the first-registered one will
  * be invoked.
  */
-void RegisterHTTPHandler(const std::string &prefix, bool exactMatch, const HTTPRequestHandler &handler);
+void RegisterHTTPHandler(const std::string &prefix, bool exactMatch, const HTTPRequestHandler &handler,
+                         http_bitcoin::HTTPPreBodyAuthFn auth_check = nullptr, std::string realm = {});
 /** Unregister handler for prefix */
 void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch);
 
@@ -89,6 +92,18 @@ constexpr uint64_t MAX_BODY_SIZE{32_MiB};
 struct ContentTooLargeError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
+
+//! Thrown when an HTTP request fails authentication before the body is read.
+//! Carries the WWW-Authenticate realm string for the 401 response.
+struct AuthError : std::runtime_error {
+    std::string realm;
+    AuthError(std::string r) : std::runtime_error("auth failed"), realm(std::move(r)) {}
+};
+
+//! Callback type for early pre-body auth checks.
+//! Receives a partially-read HTTPRequest (headers populated, body empty).
+//! Returns true if the request is authorised, false to reject with 401.
+using HTTPPreBodyAuthFn = std::function<bool(const HTTPRequest&)>;
 
 class HTTPHeaders
 {
