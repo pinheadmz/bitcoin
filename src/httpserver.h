@@ -195,6 +195,24 @@ public:
     std::pair<bool, std::string> GetHeader(std::string_view hdr) const;
     std::string ReadBody() const { return m_body; }
     void WriteHeader(std::string&& hdr, std::string&& value);
+
+    enum class State {
+        Init,
+        NeedsHeaders,
+        NeedsBody,
+        Complete,
+        Error
+    };
+    State GetState() const { return m_state; }
+    void SetState(State state) { m_state = state; }
+
+    // If a large request is sent with "Transfer-encoding: chunked" we may
+    // read the chunk size in a separate I/O loop iteration than the chunk
+    // of data itself. Store the chunk size value here until the chunk is read.
+    std::optional<uint64_t> m_chunk_size;
+
+private:
+    State m_state = State::Init;
 };
 
 class HTTPServer
@@ -542,9 +560,9 @@ public:
     /**
      * Try to read an HTTP request from the receive buffer.
      * @param[in]   req     A HTTPRequest to read into
-     * @returns true upon reading a complete request, otherwise false (may throw).
+     * @throws std::runtime_error if request is unreadable or violates protocol
      */
-    bool ReadRequest(HTTPRequest& req);
+    void ReadRequest(HTTPRequest& req);
 
     /**
      * Push data (if there is any) from client's m_send_buffer to the connected socket.
