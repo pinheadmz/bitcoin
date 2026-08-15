@@ -852,7 +852,11 @@ UniValue CRPCTable::execute(const JSONRPCRequest &request) const
         if (fRPCInWarmup)
             throw JSONRPCError(RPC_IN_WARMUP, rpcWarmupStatus);
     }
+    return ExecuteStateless(request);
+}
 
+UniValue CRPCTable::ExecuteStateless(const JSONRPCRequest &request) const
+{
     // Find method
     auto it = mapCommands.find(request.strMethod);
     if (it != mapCommands.end()) {
@@ -887,6 +891,18 @@ std::vector<std::string> CRPCTable::listCommands() const
     commandList.reserve(mapCommands.size());
     for (const auto& i : mapCommands) commandList.emplace_back(i.first);
     return commandList;
+}
+
+std::vector<std::pair<std::string, std::string>> CRPCTable::ListCommandsWithDescriptions() const
+{
+    std::vector<std::pair<std::string, std::string>> cmds_with_desc;
+    cmds_with_desc.reserve(mapCommands.size());
+    for (const auto& [name, cmds] : mapCommands) {
+        const CRPCCommand* cmd{cmds.front()};
+        RPCMethod helpman{cmd->metadata_fn()};
+        cmds_with_desc.emplace_back(name, helpman.GetDescription());
+    }
+    return cmds_with_desc;
 }
 
 UniValue CRPCTable::buildOpenRPCDoc(bool include_hidden) const
