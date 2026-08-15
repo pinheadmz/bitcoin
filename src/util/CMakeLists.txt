@@ -34,6 +34,10 @@ add_library(bitcoin_util STATIC EXCLUDE_FROM_ALL
   ../randomenv.cpp
   ../streams.cpp
   ../sync.cpp
+  ../rpc/client.cpp
+  ../rpc/request.cpp
+  ../rpc/stateless.cpp
+  ../rpc/server.cpp
 )
 
 target_link_libraries(bitcoin_util
@@ -41,7 +45,10 @@ target_link_libraries(bitcoin_util
     core_interface
     bitcoin_clientversion
     bitcoin_crypto
+    univalue
     $<$<PLATFORM_ID:Windows>:ws2_32>
     $<$<PLATFORM_ID:Windows>:iphlpapi>
     $<$<PLATFORM_ID:Windows>:bcrypt>
 )
+
+target_compile_definitions(bitcoin_util PRIVATE BITCOIN_UTIL)

@@ -20,9 +20,9 @@
 #include <util/strencodings.h>
 #include <util/string.h>
 #include <util/time.h>
-#include <validation.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <memory>
@@ -120,6 +120,7 @@ std::string CRPCTable::help(std::string_view strCommand, const JSONRPCRequest& h
     return strRet;
 }
 
+#ifndef BITCOIN_UTIL
 static RPCMethod help()
 {
     return RPCMethod{
@@ -241,6 +242,7 @@ static RPCMethod getrpcinfo()
 }
     };
 }
+#endif
 
 namespace {
 UniValue OpenRPCArgSchema(const RPCArg& arg, bool include_hidden);
@@ -516,6 +518,7 @@ UniValue OpenRPCResultSchema(const RPCResult& result)
 }
 } // namespace
 
+#ifndef BITCOIN_UTIL
 static RPCResult OpenRPCDocResult()
 {
     return RPCResult{
@@ -611,6 +614,14 @@ CRPCTable::CRPCTable()
         appendCommand(c.name, &c);
     }
 }
+
+#else
+
+CRPCTable::CRPCTable()
+{
+}
+
+#endif
 
 void CRPCTable::appendCommand(const std::string& name, const CRPCCommand* pcmd)
 {
