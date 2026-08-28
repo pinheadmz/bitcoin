@@ -1,0 +1,14 @@
+{
+  "asm": "OP_CHECKMULTISIG",
+  "desc": "raw(ae)#fdrhchkd",
+  "type": "nonstandard",
+  "p2sh": "3BYmEwgV2vANrmfRymr1mFnHXgLjD6gAWm",
+  "segwit": {
+    "asm": "0 19753a9b7681b36104c1f79dfc8a6a1eccc088b8c7d2903a446d81694d2fb3a9",
+    "desc": "addr(bc1qr96n4xmksxekzpxp77wlezn2rmxvpz9cclffqwjydkqkjnf0kw5sktsdp2)#c8cqagla",
+    "hex": "002019753a9b7681b36104c1f79dfc8a6a1eccc088b8c7d2903a446d81694d2fb3a9",
+    "address": "bc1qr96n4xmksxekzpxp77wlezn2rmxvpz9cclffqwjydkqkjnf0kw5sktsdp2",
+    "type": "witness_v0_scripthash",
+    "p2sh-segwit": "3F2MBfvPfBVsKEnNpeyD1JVbhu2m66DpM3"
+  }
+}

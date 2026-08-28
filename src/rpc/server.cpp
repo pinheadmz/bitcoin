@@ -20,9 +20,9 @@
 #include <util/strencodings.h>
 #include <util/string.h>
 #include <util/time.h>
-#include <validation.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <memory>
@@ -120,6 +120,7 @@ std::string CRPCTable::help(std::string_view strCommand, const JSONRPCRequest& h
     return strRet;
 }
 
+#ifndef BITCOIN_UTIL
 static RPCMethod help()
 {
     return RPCMethod{
@@ -241,6 +242,7 @@ static RPCMethod getrpcinfo()
 }
     };
 }
+#endif
 
 namespace {
 UniValue OpenRPCArgSchema(const RPCArg& arg, bool include_hidden, bool in_skip_type_check);
@@ -523,6 +525,7 @@ UniValue OpenRPCResultSchema(const RPCResult& result)
 }
 } // namespace
 
+#ifndef BITCOIN_UTIL
 static RPCResult OpenRPCDocResult()
 {
     return RPCResult{
@@ -618,6 +621,14 @@ CRPCTable::CRPCTable()
         appendCommand(c.name, &c);
     }
 }
+
+#else
+
+CRPCTable::CRPCTable()
+{
+}
+
+#endif
 
 void CRPCTable::appendCommand(const std::string& name, const CRPCCommand* pcmd)
 {
@@ -859,7 +870,11 @@ UniValue CRPCTable::execute(const JSONRPCRequest &request) const
         if (fRPCInWarmup)
             throw JSONRPCError(RPC_IN_WARMUP, rpcWarmupStatus);
     }
+    return ExecuteStateless(request);
+}
 
+UniValue CRPCTable::ExecuteStateless(const JSONRPCRequest &request) const
+{
     // Find method
     auto it = mapCommands.find(request.strMethod);
     if (it != mapCommands.end()) {
@@ -894,6 +909,18 @@ std::vector<std::string> CRPCTable::listCommands() const
     commandList.reserve(mapCommands.size());
     for (const auto& i : mapCommands) commandList.emplace_back(i.first);
     return commandList;
+}
+
+std::vector<std::pair<std::string, std::string>> CRPCTable::ListCommandsWithDescriptions() const
+{
+    std::vector<std::pair<std::string, std::string>> cmds_with_desc;
+    cmds_with_desc.reserve(mapCommands.size());
+    for (const auto& [name, cmds] : mapCommands) {
+        const CRPCCommand* cmd{cmds.front()};
+        RPCMethod helpman{cmd->metadata_fn()};
+        cmds_with_desc.emplace_back(name, helpman.GetDescription());
+    }
+    return cmds_with_desc;
 }
 
 UniValue CRPCTable::buildOpenRPCDoc(bool include_hidden) const

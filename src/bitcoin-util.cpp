@@ -14,6 +14,10 @@
 #include <common/system.h>
 #include <compat/compat.h>
 #include <core_io.h>
+#include <rpc/client.h>
+#include <rpc/register.h>
+#include <rpc/request.h>
+#include <rpc/server.h>
 #include <streams.h>
 #include <univalue.h>
 #include <util/exception.h>
@@ -30,6 +34,8 @@ static const int CONTINUE_EXECUTION=-1;
 
 const TranslateFn G_TRANSLATION_FUN{nullptr};
 
+CRPCTable g_rpc_table;
+
 static void SetupBitcoinUtilArgs(ArgsManager &argsman)
 {
     SetupHelpOptions(argsman);
@@ -39,6 +45,10 @@ static void SetupBitcoinUtilArgs(ArgsManager &argsman)
     argsman.AddCommand("grind", "Perform proof of work on hex header string");
     argsman.AddCommand("getchainparams", "Get hardcoded parameters for the selected chain");
 
+    for (const auto& [name, description] : g_rpc_table.ListCommandsWithDescriptions()) {
+        argsman.AddCommand(name, description);
+    }
+
     SetupChainParamsBaseOptions(argsman);
 }
 
@@ -46,7 +56,9 @@ static void SetupBitcoinUtilArgs(ArgsManager &argsman)
 // CONTINUE_EXECUTION when it's expected to continue further.
 static int AppInitUtil(ArgsManager& args, int argc, char* argv[])
 {
+    RegisterStatelessRPCCommands(g_rpc_table);
     SetupBitcoinUtilArgs(args);
+
     std::string error;
     if (!args.ParseParameters(argc, argv, error)) {
         tfm::format(std::cerr, "Error parsing command line arguments: %s\n", error);
@@ -241,7 +253,22 @@ MAIN_FUNCTION
         } else if (cmd->command == "getchainparams") {
             ret = GetChainParams(cmd->args, strPrint);
         } else {
-            assert(false); // unknown command should be caught earlier
+            JSONRPCRequest req;
+            req.strMethod = cmd->command;
+
+            if(gArgs.GetBoolArg("-named", false)) {
+                req.params = RPCConvertNamedValues(req.strMethod, cmd->args);
+            } else {
+                req.params = RPCConvertValues(req.strMethod, cmd->args);
+            }
+
+            try {
+                UniValue result{g_rpc_table.ExecuteStateless(req)};
+                strPrint = result.write(/*prettyIndent=*/2);
+                ret = 0;
+            } catch (UniValue& e) {
+                throw std::runtime_error(e.find_value("message").get_str());
+            }
         }
     } catch (const std::exception& e) {
         strPrint = std::string("error: ") + e.what();

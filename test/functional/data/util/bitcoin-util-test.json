@@ -78,6 +78,13 @@
     "error_txt": "getchainparams does not take arguments",
     "description": "getchainparams rejects extra arguments"
   },
+  {
+    "exec": "./bitcoin-util",
+    "args": ["decodescript", "ae"],
+    "return_code": 0,
+    "output_cmp": "decodescript-ae.json",
+    "description": "decodescript just like bitcoin-cli"
+  },
   { "exec": "./bitcoin-tx",
     "args": ["-create", "nversion=1"],
     "output_cmp": "blanktxv1.hex",
