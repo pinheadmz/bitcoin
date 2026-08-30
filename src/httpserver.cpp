@@ -1003,7 +1003,20 @@ HTTPServer::IOReadiness HTTPServer::GenerateWaitSockets() const
         // never hold m_sock_mutex and m_send_mutex at the same time here.
         // MaybeSendBytesFromBuffer() locks m_send_mutex then m_sock_mutex, so nesting
         // them in the opposite order here would risk a lock-order inversion deadlock.
-        Sock::Event event = (http_client->ReadyToSend() ? Sock::SendEvent : Sock::RecvEvent);
+        Sock::Event event;
+        if (http_client->ReadyToSend()) {
+            event = Sock::SendEvent;
+        } else if (http_client->RequestBusy()) {
+            // While the client has a request being processed by a worker, don't
+            // read any more from the socket. Excess (pipelined) data then backs up
+            // in the kernel socket buffer, which applies TCP backpressure to the
+            // sender, instead of accumulating without bound in m_recv_buffer.
+            // Only one request per connection is ever in flight.
+            continue;
+        } else {
+            event = Sock::RecvEvent;
+        }
+
         io_readiness.events_per_sock.emplace(sock, Sock::Events{event});
         io_readiness.httpclients_per_sock.emplace(sock, http_client);
     }
