@@ -109,6 +109,13 @@ jobs:
     # See: https://github.com/actions/runner-images#available-images.
     runs-on: macos-15
 
+    # When a contributor maintains a fork of the repo, any pull request they make
+    # to their own fork, or to the main repository, will trigger two CI runs:
+    # one for the branch push and one for the pull request.
+    # This can be avoided by setting SKIP_BRANCH_PUSH=true as a custom env variable
+    # in Github repository settings.
+    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
+
     timeout-minutes: 120
 
     strategy:
