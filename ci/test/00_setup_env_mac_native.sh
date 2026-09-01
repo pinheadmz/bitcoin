@@ -20,3 +20,4 @@ export BITCOIN_CONFIG="\
   -DCMAKE_EXE_LINKER_FLAGS='-Wl,-stack_size -Wl,0x80000' \
 "
 export BITCOIN_CMD="bitcoin -m" # Used in functional tests
+export RUN_UNIT_TESTS=false

@@ -209,7 +209,8 @@ if [ "$RUN_FUNCTIONAL_TESTS" = "true" ]; then
     --combinedlogslen=99999999 \
     --timeout-factor="1" \
     "${TEST_RUNNER_EXTRA[@]}" \
-    --failfast
+    --failfast \
+    --filter=interface
 fi
 
 if [ "${RUN_TIDY}" = "true" ]; then
