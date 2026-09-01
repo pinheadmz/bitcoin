@@ -207,9 +207,8 @@ if [ "$RUN_FUNCTIONAL_TESTS" = "true" ]; then
     --tmpdirprefix "${BASE_SCRATCH_DIR}/test_runner/" \
     --ansi \
     --combinedlogslen=99999999 \
-    --timeout-factor="${TEST_RUNNER_TIMEOUT_FACTOR}" \
+    --timeout-factor="1" \
     "${TEST_RUNNER_EXTRA[@]}" \
-    --quiet \
     --failfast
 fi
 

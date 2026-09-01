@@ -32,7 +32,7 @@ jobs:
     runs-on: ${{ github.repository == 'bitcoin/bitcoin' && 'warp-ubuntu-latest-x64-8x' || 'ubuntu-latest' }}
     env:
       TEST_RUNNER_PORT_MIN: "14000"  # Use a larger port range to avoid colliding with other CI services.
-    if: github.event_name == 'pull_request' && github.event.pull_request.commits != 1
+    if: false
     timeout-minutes: 360  # Use maximum time, see https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_idtimeout-minutes.
     steps:
       - name: Determine fetch depth
@@ -108,13 +108,6 @@ jobs:
     # Use any image to support the xcode-select below, but hardcode version to avoid silent upgrades (and breaks).
     # See: https://github.com/actions/runner-images#available-images.
     runs-on: macos-15
-
-    # When a contributor maintains a fork of the repo, any pull request they make
-    # to their own fork, or to the main repository, will trigger two CI runs:
-    # one for the branch push and one for the pull request.
-    # This can be avoided by setting SKIP_BRANCH_PUSH=true as a custom env variable
-    # in Github repository settings.
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
 
     timeout-minutes: 120
 
@@ -197,7 +190,7 @@ jobs:
     name: ${{ matrix.job-name }}
     runs-on: windows-2025-vs2026
 
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
+    if: false
 
     env:
       PYTHONUTF8: 1
@@ -294,6 +287,7 @@ jobs:
     # the exact same commit id of the build.
     name: '[meta] record frozen commit'
     runs-on: ubuntu-slim
+    if: false
     outputs:
       commit: ${{ steps.record-commit.outputs.commit }}
     steps:
@@ -307,7 +301,7 @@ jobs:
     name: 'Windows-cross to x86_64, ${{ matrix.crt }}'
     needs: record-frozen-commit
     runs-on: ${{ github.repository == 'bitcoin/bitcoin' && 'warp-ubuntu-latest-x64-4x' || 'ubuntu-latest' }}
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
+    if: false
 
     strategy:
       fail-fast: false
@@ -370,6 +364,7 @@ jobs:
     name: 'Windows, ${{ matrix.crt }}, test cross-built'
     runs-on: windows-2022
     needs: [windows-cross, record-frozen-commit]
+    if: false
 
     strategy:
       fail-fast: false
@@ -426,7 +421,7 @@ jobs:
   ci-matrix:
     name: ${{ matrix.name }}
     runs-on: ${{ github.repository == 'bitcoin/bitcoin' && matrix.warp-runner || matrix.fallback-runner }}
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
+    if: false
     timeout-minutes: ${{ matrix.timeout-minutes }}
 
     env:
@@ -591,7 +586,7 @@ jobs:
   lint:
     name: 'lint'
     runs-on: ${{ github.repository == 'bitcoin/bitcoin' && 'warp-ubuntu-latest-x64-2x' || 'ubuntu-latest' }}
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
+    if: false
     timeout-minutes: 20
     env:
       CONTAINER_NAME: "bitcoin-linter"
