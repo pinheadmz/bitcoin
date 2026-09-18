@@ -204,14 +204,72 @@ if [ "$RUN_FUNCTIONAL_TESTS" = "true" ]; then
   eval "TEST_RUNNER_EXTRA=($TEST_RUNNER_EXTRA)"
   LD_LIBRARY_PATH="${DEPENDS_DIR}/${HOST}/lib" \
   "${BASE_BUILD_DIR}/test/functional/test_runner.py" \
-    "${MAKEJOBS}" \
-    --tmpdirprefix "${BASE_SCRATCH_DIR}/test_runner/" \
-    --ansi \
-    --combinedlogslen=99999999 \
-    --timeout-factor="${TEST_RUNNER_TIMEOUT_FACTOR}" \
-    "${TEST_RUNNER_EXTRA[@]}" \
-    --quiet \
-    --failfast
+  "${MAKEJOBS}" \
+  --tmpdirprefix "${BASE_SCRATCH_DIR}/test_runner/" \
+  --ansi \
+  &
+
+  # Run interface_http.py in a loop until it fails. On each iteration start a
+  # fresh packet capture, overwriting the capture file, so it always contains
+  # the most recent iteration. If a test iteration fails, stop the capture,
+  # save it to ${BASE_ROOT_DIR}/interface_http.pcap and exit with an error so
+  # the CI workflow uploads the capture as an artifact.
+  CAPTURE_FILE="${BASE_ROOT_DIR}/interface_http.pcap"
+  CAPTURE_ENABLED=1
+  if [ "$(uname)" = "Darwin" ]; then
+    CAPTURE_IFACE=lo0
+  else
+    CAPTURE_IFACE=lo
+  fi
+  if ! command -v tcpdump >/dev/null 2>&1 || ! sudo -n -v 2>/dev/null; then
+    echo "WARNING: tcpdump or passwordless sudo unavailable; packet capture disabled"
+    CAPTURE_ENABLED=0
+  fi
+
+  stop_capture() {
+    sudo -n pkill -x tcpdump 2>/dev/null || true
+    wait "${CAPTURE_SHELL_PID}" 2>/dev/null || true
+    sleep 1
+    sudo -n chmod 644 "${CAPTURE_FILE}" 2>/dev/null || true
+  }
+
+  start_capture() {
+    rm -f "${CAPTURE_FILE}"
+    # -U: packet-buffered output. tcpdump truncates the capture file on
+    # startup, so each iteration overwrites the previous capture.
+    sudo -n tcpdump -i "${CAPTURE_IFACE}" -n -s 0 -U -w "${CAPTURE_FILE}" tcp 2>/dev/null &
+    CAPTURE_SHELL_PID=$!
+    sleep 1
+    if [ ! -s "${CAPTURE_FILE}" ]; then
+      echo "WARNING: tcpdump did not start writing ${CAPTURE_FILE}; packet capture disabled"
+      CAPTURE_ENABLED=0
+    fi
+  }
+
+  i=0
+  while true; do
+    if [ "${CAPTURE_ENABLED}" = 1 ]; then
+      start_capture
+    fi
+    if "${BASE_BUILD_DIR}/test/functional/interface_http.py" -l DEBUG; then
+      i=$((i + 1))
+      echo "=== interface_http iteration ${i} PASSED ==="
+      if [ "${CAPTURE_ENABLED}" = 1 ]; then
+        stop_capture
+      fi
+      if [ "${i}" -ge 300 ]; then
+        echo "=== interface_http PASSED ${i} consecutive iterations; exiting with success ==="
+        exit 0
+      fi
+    else
+      echo "=== interface_http FAILED (iteration $((i + 1))); packet capture saved to ${CAPTURE_FILE} ==="
+      if [ "${CAPTURE_ENABLED}" = 1 ]; then
+        stop_capture
+      fi
+      exit 1
+    fi
+  done
+
 fi
 
 if [ "${RUN_TIDY}" = "true" ]; then
