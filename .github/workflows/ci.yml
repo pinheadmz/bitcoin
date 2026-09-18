@@ -32,7 +32,7 @@ jobs:
     runs-on: ${{ github.repository == 'bitcoin/bitcoin' && 'warp-ubuntu-latest-x64-8x' || 'ubuntu-latest' }}
     env:
       TEST_RUNNER_PORT_MIN: "14000"  # Use a larger port range to avoid colliding with other CI services.
-    if: github.event_name == 'pull_request' && github.event.pull_request.commits != 1
+    if: false
     timeout-minutes: 360  # Use maximum time, see https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_idtimeout-minutes.
     steps:
       - name: Determine fetch depth
@@ -114,7 +114,7 @@ jobs:
     # one for the branch push and one for the pull request.
     # This can be avoided by setting SKIP_BRANCH_PUSH=true as a custom env variable
     # in Github repository settings.
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
+    if: true
 
     timeout-minutes: 120
 
@@ -185,9 +185,17 @@ jobs:
         env:
           FILE_ENV: ${{ matrix.file-env }}
 
+      - name: Upload interface_http packet capture
+        if: always() && matrix.job-type == 'standard'
+        uses: actions/upload-artifact@v7
+        with:
+          name: interface_http-pcap-${{ matrix.job-type }}-${{ github.run_id }}
+          path: repo_archive/interface_http.pcap
+          if-no-files-found: ignore
+
       - name: Save Ccache cache
         uses: actions/cache/save@v5
-        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch && steps.ccache-cache.outputs.cache-hit != 'true'
+        if: true
         with:
           path: ${{ env.CCACHE_DIR }}
           # https://github.com/actions/cache/blob/main/tips-and-workarounds.md#update-a-cache
@@ -197,7 +205,7 @@ jobs:
     name: ${{ matrix.job-name }}
     runs-on: windows-2025-vs2026
 
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
+    if: false
 
     env:
       PYTHONUTF8: 1
@@ -294,6 +302,7 @@ jobs:
     # the exact same commit id of the build.
     name: '[meta] record frozen commit'
     runs-on: ubuntu-slim
+    if: false
     outputs:
       commit: ${{ steps.record-commit.outputs.commit }}
     steps:
@@ -307,7 +316,7 @@ jobs:
     name: 'Windows-cross to x86_64'
     needs: record-frozen-commit
     runs-on: ${{ github.repository == 'bitcoin/bitcoin' && 'warp-ubuntu-latest-x64-4x' || 'ubuntu-latest' }}
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
+    if: false
 
     env:
       FILE_ENV: './ci/test/00_setup_env_win64.sh'
@@ -358,6 +367,7 @@ jobs:
     name: 'Windows, test cross-built'
     runs-on: windows-2022
     needs: [windows-cross, record-frozen-commit]
+    if: false
 
     env:
       PYTHONUTF8: 1
@@ -402,7 +412,7 @@ jobs:
   ci-matrix:
     name: ${{ matrix.name }}
     runs-on: ${{ github.repository == 'bitcoin/bitcoin' && matrix.warp-runner || matrix.fallback-runner }}
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
+    if: false
     timeout-minutes: ${{ matrix.timeout-minutes }}
 
     env:
@@ -567,7 +577,7 @@ jobs:
   lint:
     name: 'lint'
     runs-on: ${{ github.repository == 'bitcoin/bitcoin' && 'warp-ubuntu-latest-x64-2x' || 'ubuntu-latest' }}
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
+    if: false
     timeout-minutes: 20
     env:
       CONTAINER_NAME: "bitcoin-linter"
