@@ -10,6 +10,7 @@
 #include <compat/compat.h>
 #include <sync.h>
 #include <tinyformat.h>
+#include <util/fs.h>
 #include <util/log.h>
 #include <util/overloaded.h>
 #include <util/sock.h>
@@ -26,6 +27,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <system_error>
 
 #ifdef HAVE_SOCKADDR_UN
 #include <sys/un.h>
@@ -739,6 +741,46 @@ bool UnixSocketAddr::SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen
 #endif
 }
 
+util::Expected<void, std::string> UnixSocketAddr::PreparePath() const
+{
+#ifdef HAVE_SOCKADDR_UN
+    if (!IsValid()) return util::Unexpected{"invalid unix socket path"};
+    const fs::path path{fs::PathFromString(GetDestString())};
+    std::error_code ec;
+
+    // Adapted from src/ipc/process.cpp ProcessImpl::bind()
+    if (path.has_parent_path()) {
+        fs::create_directories(path.parent_path(), ec);
+        if (ec) {
+            return util::Unexpected{strprintf("cannot create directory %s: %s",
+                                              fs::PathToString(path.parent_path()), ec.message())};
+        }
+    }
+
+    // Use symlink_status so that a symlink is examined itself rather than followed
+    const fs::file_type type{fs::symlink_status(path, ec).type()};
+    if (type == fs::file_type::not_found) return {};
+    if (ec) {
+        return util::Unexpected{strprintf("cannot stat %s: %s", fs::PathToString(path), ec.message())};
+    }
+    if (type != fs::file_type::socket) {
+        // Never delete something that isn't a socket; the user may have given
+        // the wrong path or something else lives there.
+        return util::Unexpected{strprintf("%s already exists and is not a socket", fs::PathToString(path))};
+    }
+
+    // A stale socket file from a previous run would make bind() fail with EADDRINUSE
+    fs::remove(path, ec);
+    if (ec) {
+        return util::Unexpected{strprintf("cannot remove stale socket file %s: %s",
+                                          fs::PathToString(path), ec.message())};
+    }
+    return {};
+#else
+    return util::Unexpected{"unix sockets not supported on this platform"};
+#endif
+}
+
 bool SocketAddr::SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen)
 {
     if (paddr->sa_family == AF_UNIX) {
@@ -811,6 +853,15 @@ std::string SocketAddr::GetHost() const
                         [](const CService& svc) { return svc.ToStringAddr(); }
                     },
                     m_addr);
+}
+
+util::Expected<void, std::string> SocketAddr::PreparePath() const
+{
+    return std::visit(util::Overloaded{
+                          [](const UnixSocketAddr& addr) { return addr.PreparePath(); },
+                          [](const CService&) { return util::Expected<void, std::string>{}; }
+                      },
+                      m_addr);
 }
 
 bool SetProxy(enum Network net, const Proxy &addrProxy) {

@@ -8,6 +8,7 @@
 #include <compat/compat.h>
 #include <netaddress.h>
 #include <serialize.h>
+#include <util/expected.h>
 #include <util/sock.h>
 #include <util/threadinterrupt.h>
 
@@ -102,6 +103,15 @@ public:
     [[nodiscard]] bool IsIPv4() const { return false; }
     [[nodiscard]] bool IsIPv6() const { return false; }
 
+    /**
+     * Prepare the filesystem for bind(): create missing parent directories and
+     * remove a stale socket file left by a previous run. Fails if the path
+     * exists and is anything other than a socket, so that a misconfigured path
+     * never deletes a user's file.
+     * @returns an error message on failure
+     */
+    util::Expected<void, std::string> PreparePath() const;
+
 private:
     std::string m_path;
 };
@@ -186,6 +196,9 @@ public:
      * port (IPv6 is not bracketed), or "localhost" for a UNIX socket address.
      */
     [[nodiscard]] std::string GetHost() const;
+
+    /** See UnixSocketAddr::PreparePath(). No-op (success) for an IP address. */
+    util::Expected<void, std::string> PreparePath() const;
 
 private:
     std::variant<CService, UnixSocketAddr> m_addr;

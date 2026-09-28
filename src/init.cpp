@@ -1296,7 +1296,7 @@ bool CheckHostPortOptions(const ArgsManager& args) {
         {"-onion",           true,                false},
         {"-proxy",           true,                true},
         {"-bind",            false,               true},
-        {"-rpcbind",         false,               false},
+        {"-rpcbind",         true,                false},
         {"-torcontrol",      false,               false},
         {"-whitebind",       false,               false},
         {"-zmqpubhashblock", true,                false},
