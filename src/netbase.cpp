@@ -10,6 +10,7 @@
 #include <compat/compat.h>
 #include <sync.h>
 #include <tinyformat.h>
+#include <util/fs.h>
 #include <util/log.h>
 #include <util/overloaded.h>
 #include <util/sock.h>
@@ -729,6 +730,16 @@ bool UnixSocketAddr::SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen
 #endif
 }
 
+void UnixSocketAddr::PreparePath() const
+{
+    // Copied from src/ipc/process.cpp ProcessImpl::bind()
+    fs::path path{fs::PathFromString(GetDestString())};
+    if (path.has_parent_path()) fs::create_directories(path.parent_path());
+    if (fs::symlink_status(path).type() == fs::file_type::socket) {
+        fs::remove(path);
+    }
+}
+
 bool SocketAddr::SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen)
 {
     if (paddr->sa_family == AF_UNIX) {
@@ -799,6 +810,15 @@ std::string SocketAddr::GetHost() const
                         [](const CService& svc) { return svc.ToStringAddr(); }
                     },
                     m_addr);
+}
+
+void SocketAddr::PreparePath() const
+{
+    std::visit(util::Overloaded{
+                    [](const UnixSocketAddr& addr) { addr.PreparePath(); },
+                    [](const CService& svc) {}
+                },
+                m_addr);
 }
 
 bool SetProxy(enum Network net, const Proxy &addrProxy) {

@@ -79,6 +79,8 @@ public:
     std::string GetDestString() const { return m_path.substr(ADDR_PREFIX_UNIX.length()); }
     bool IsIPv4() const {return false; }
     bool IsIPv6() const {return false; }
+    // Create parent directories if needed and remove any stale endpoint
+    void PreparePath() const;
 
 private:
     std::string m_path;
@@ -136,6 +138,7 @@ public:
     std::unique_ptr<Sock> Connect(std::chrono::milliseconds timeout) const;
     CNetAddr GetCNetAddr() const;
     std::string GetHost() const;
+    void PreparePath() const;
 
 private:
     std::variant<CService, UnixSocketAddr> m_addr;

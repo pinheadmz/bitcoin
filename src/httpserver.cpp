@@ -76,12 +76,16 @@ static ThreadPool g_threadpool_http("http");
 static int g_max_queue_depth{100};
 
 /** Check if a network address is allowed to access the HTTP server */
-bool HTTPServer::ClientAllowed(const CNetAddr& netaddr) const
+bool HTTPServer::ClientAllowed(const SocketAddr& netaddr) const
 {
+    // Unix sockets: access is managed by the file system
+    if (netaddr.IsUnix())
+        return true;
+
     if (!netaddr.IsValid())
         return false;
     for(const CSubNet& subnet : m_allow_subnets)
-        if (subnet.Match(netaddr))
+        if (subnet.Match(netaddr.GetCNetAddr()))
             return true;
     return false;
 }
@@ -205,10 +209,10 @@ static void RejectRequest(std::unique_ptr<HTTPRequest> hreq)
     WriteNoStoreErrorReply(*hreq, HTTP_SERVICE_UNAVAILABLE);
 }
 
-static std::vector<std::pair<std::string, uint16_t>> GetBindAddresses()
+static std::vector<SocketAddr> GetBindAddresses()
 {
     uint16_t http_port{static_cast<uint16_t>(gArgs.GetIntArg("-rpcport", BaseParams().RPCPort()))};
-    std::vector<std::pair<std::string, uint16_t>> endpoints;
+    std::vector<SocketAddr> endpoints;
 
     // Determine what addresses to bind to
     // To prevent misconfiguration and accidental exposure of the RPC
@@ -216,8 +220,8 @@ static std::vector<std::pair<std::string, uint16_t>> GetBindAddresses()
     // together. If either is missing, ignore both values, bind to localhost
     // instead, and log warnings.
     if (gArgs.GetArgs("-rpcallowip").empty() || gArgs.GetArgs("-rpcbind").empty()) { // Default to loopback if not allowing external IPs
-        endpoints.emplace_back("::1", http_port);
-        endpoints.emplace_back("127.0.0.1", http_port);
+        endpoints.emplace_back(Lookup("::1", http_port, false).value());
+        endpoints.emplace_back(Lookup("127.0.0.1", http_port, false).value());
         if (!gArgs.GetArgs("-rpcallowip").empty()) {
             LogWarning("Option -rpcallowip was specified without -rpcbind; this doesn't usually make sense");
         }
@@ -228,11 +232,23 @@ static std::vector<std::pair<std::string, uint16_t>> GetBindAddresses()
         for (const std::string& strRPCBind : gArgs.GetArgs("-rpcbind")) {
             uint16_t port{http_port};
             std::string host;
-            if (!SplitHostPort(strRPCBind, port, host)) {
-                LogError("%s\n", InvalidPortErrMsg("-rpcbind", strRPCBind).original);
-                return {}; // empty
+            if (IsUnixSocketPath(strRPCBind)) {
+                endpoints.emplace_back(UnixSocketAddr(strRPCBind));
+            } else {
+                if (!SplitHostPort(strRPCBind, port, host)) {
+                    LogError("%s\n", InvalidPortErrMsg("-rpcbind", strRPCBind).original);
+                    continue;
+                }
+                const std::optional<CService> addr{Lookup(strRPCBind, port, false)};
+                if (!addr) {
+                    LogWarning("Could not bind RPC on address %s port %i: Address lookup failed.", strRPCBind, port);
+                    continue;
+                }
+                if (addr->IsBindAny()) {
+                    LogWarning("The RPC server is not safe to expose to untrusted networks such as the public internet");
+                }
+                endpoints.emplace_back(addr.value());
             }
-            endpoints.emplace_back(host, port);
         }
     }
     return endpoints;
@@ -715,7 +731,9 @@ util::Expected<void, std::string> HTTPServer::BindAndStartListening(const Socket
         return util::Unexpected{strprintf("Bind address family for %s not supported", to.ToStringAddrPort())};
     }
 
-    std::unique_ptr<Sock> sock{CreateSock(to.GetSAFamily(), SOCK_STREAM, IPPROTO_TCP)};
+    int protocol{IPPROTO_TCP};
+    if (to.IsUnix()) protocol = 0;
+    std::unique_ptr<Sock> sock{CreateSock(to.GetSAFamily(), SOCK_STREAM, protocol)};
     if (!sock) {
         return util::Unexpected{strprintf("Cannot create %s listen socket: %s",
                                           to.ToStringAddrPort(),
@@ -767,6 +785,11 @@ util::Expected<void, std::string> HTTPServer::BindAndStartListening(const Socket
         }
 #endif
     }
+
+    // no-op if not a UNIX socket.
+    // Otherwise creates parent directories if necessary and
+    // removes any stale socket endpoint from previous run.
+    to.PreparePath();
 
     if (sock->Bind(sa, len) == SOCKET_ERROR) {
         const int err{WSAGetLastError()};
@@ -845,7 +868,7 @@ std::unique_ptr<Sock> HTTPServer::AcceptConnection(const Sock& listen_sock, Sock
     }
 
     // Early address-based allow check
-    if (!ClientAllowed(addr.GetCNetAddr())) {
+    if (!ClientAllowed(addr)) {
         LogDebug(BCLog::HTTP, "Connection from %s rejected: Client network is not allowed HTTP access\n",
                  addr.ToStringAddrPort());
         // Socket destroyed, connection aborted
@@ -871,7 +894,7 @@ void HTTPServer::NewSockAccepted(std::unique_ptr<Sock>&& sock, const SocketAddr&
 
     // According to the internet TCP_NODELAY is not carried into accepted sockets
     // on all platforms.  Set it again here just to be sure.
-    if (sock->SetSockOpt(IPPROTO_TCP, TCP_NODELAY, &SOCKET_OPTION_TRUE, sizeof(SOCKET_OPTION_TRUE)) == SOCKET_ERROR) {
+    if (!addr.IsUnix() && sock->SetSockOpt(IPPROTO_TCP, TCP_NODELAY, &SOCKET_OPTION_TRUE, sizeof(SOCKET_OPTION_TRUE)) == SOCKET_ERROR) {
         LogDebug(BCLog::HTTP, "connection from %s: unable to set TCP_NODELAY, continuing anyway",
                  addr.ToStringAddrPort());
     }
@@ -1351,23 +1374,15 @@ bool InitHTTPServer()
     g_http_server->SetMaxConnections(std::max(gArgs.GetArg<int>("-rpcmaxconnections", DEFAULT_MAX_HTTP_CONNECTIONS), 1));
 
     // Bind HTTP server to specified addresses
-    std::vector<std::pair<std::string, uint16_t>> endpoints{GetBindAddresses()};
+    std::vector<SocketAddr> endpoints{GetBindAddresses()};
     bool bind_success{false};
-    for (const auto& [address_string, port] : endpoints) {
-        LogInfo("Binding RPC on address %s port %i", address_string, port);
-        const std::optional<CService> addr{Lookup(address_string, port, false)};
-        if (addr) {
-            if (addr->IsBindAny()) {
-                LogWarning("The RPC server is not safe to expose to untrusted networks such as the public internet");
-            }
-            auto result{g_http_server->BindAndStartListening(SocketAddr(addr.value()))};
-            if (!result) {
-                LogWarning("Binding RPC on address %s failed: %s", addr->ToStringAddrPort(), result.error());
-            } else {
-                bind_success = true;
-            }
+    for (const auto& addr : endpoints) {
+        LogInfo("Binding RPC on address %s", addr.ToStringAddrPort());
+        auto result{g_http_server->BindAndStartListening(addr)};
+        if (!result) {
+            LogWarning("Binding RPC on address %s failed: %s", addr.ToStringAddrPort(), result.error());
         } else {
-            LogWarning("Could not bind RPC on address %s port %i: Address lookup failed.", address_string, port);
+            bind_success = true;
         }
     }
 

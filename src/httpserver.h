@@ -425,7 +425,7 @@ private:
     /**
      * Check an incoming connection's source IP against the allow list
      */
-    bool ClientAllowed(const CNetAddr& netaddr) const;
+    bool ClientAllowed(const SocketAddr& netaddr) const;
 
     /**
      * Maximum amount of concurrent connections
