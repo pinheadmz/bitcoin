@@ -214,27 +214,23 @@ static std::vector<SocketAddr> GetBindAddresses()
     uint16_t http_port{static_cast<uint16_t>(gArgs.GetIntArg("-rpcport", BaseParams().RPCPort()))};
     std::vector<SocketAddr> endpoints;
 
-    // Determine what addresses to bind to
-    // To prevent misconfiguration and accidental exposure of the RPC
-    // interface, require -rpcallowip and -rpcbind to both be specified
-    // together. If either is missing, ignore both values, bind to localhost
-    // instead, and log warnings.
-    if (gArgs.GetArgs("-rpcallowip").empty() || gArgs.GetArgs("-rpcbind").empty()) { // Default to loopback if not allowing external IPs
-        endpoints.emplace_back(Lookup("::1", http_port, false).value());
-        endpoints.emplace_back(Lookup("127.0.0.1", http_port, false).value());
-        if (!gArgs.GetArgs("-rpcallowip").empty()) {
-            LogWarning("Option -rpcallowip was specified without -rpcbind; this doesn't usually make sense");
-        }
-        if (!gArgs.GetArgs("-rpcbind").empty()) {
-            LogWarning("Option -rpcbind was ignored because -rpcallowip was not specified, refusing to allow everyone to connect");
-        }
-    } else { // Specific bind addresses
+    // Only one IP address latches this to false
+    bool only_unix_sockets{true};
+    // Set to true if no addresses were specified, or
+    // if we need to override a user misconfiguration.
+    bool force_localhost{false};
+
+    // Determine what addresses to bind to.
+    if (!gArgs.GetArgs("-rpcbind").empty()) {
+        // Specific bind addresses.
         for (const std::string& strRPCBind : gArgs.GetArgs("-rpcbind")) {
             uint16_t port{http_port};
             std::string host;
             if (IsUnixSocketPath(strRPCBind)) {
+                // UNIX socket is a filesystem path
                 endpoints.emplace_back(UnixSocketAddr(strRPCBind));
             } else {
+                // IPv4 or IPv6 address
                 if (!SplitHostPort(strRPCBind, port, host)) {
                     LogError("%s\n", InvalidPortErrMsg("-rpcbind", strRPCBind).original);
                     continue;
@@ -247,10 +243,36 @@ static std::vector<SocketAddr> GetBindAddresses()
                 if (addr->IsBindAny()) {
                     LogWarning("The RPC server is not safe to expose to untrusted networks such as the public internet");
                 }
+                only_unix_sockets = false;
                 endpoints.emplace_back(addr.value());
             }
         }
+    } else {
+        force_localhost = true;
     }
+
+    // Access to unix sockets is negotiated by the filesystem.
+    // If we are ONLY binding to unix sockets, we can disregard -rpcallowip.
+    // Otherwise, to prevent misconfiguration and accidental exposure of the HTTP
+    // interface, require -rpcallowip if -rpcbind is set.
+    // If the user is misconfigured we restrict HTTP to localhost and log warnings.
+    if  (!only_unix_sockets &&
+        (gArgs.GetArgs("-rpcallowip").empty() && !gArgs.GetArgs("-rpcbind").empty())) {
+        LogWarning("Option -rpcbind was ignored because -rpcallowip was not specified, refusing to allow everyone to connect");
+        force_localhost = true;
+    }
+
+    // Default to loopback, or replace user misconfiguration.
+    if (force_localhost) {
+        endpoints.clear();
+        endpoints.emplace_back(Lookup("::1", http_port, false).value());
+        endpoints.emplace_back(Lookup("127.0.0.1", http_port, false).value());
+        only_unix_sockets = false;
+        if (!gArgs.GetArgs("-rpcallowip").empty()) {
+            LogWarning("Option -rpcallowip was specified without -rpcbind; this doesn't usually make sense");
+        }
+    }
+
     return endpoints;
 }
 
