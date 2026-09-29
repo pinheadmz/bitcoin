@@ -836,7 +836,7 @@ static std::optional<UniValue> CallIPC(BaseRequestHandler* rh, const std::string
 class HTTPClient
 {
 public:
-    static HTTPClient Connect(const std::string& host, uint16_t port, std::chrono::seconds timeout);
+    static HTTPClient Connect(SocketAddr& sockaddr, std::chrono::milliseconds timeout);
 
     HTTPResponse Post(const std::string& endpoint,
                       std::span<const std::pair<std::string, std::string>> headers,
@@ -848,32 +848,23 @@ private:
 
     std::unique_ptr<Sock> m_socket;
     std::string m_host;
-    std::chrono::seconds m_timeout;
+    std::chrono::milliseconds m_timeout;
 
-    HTTPClient(std::unique_ptr<Sock>&& socket, const std::string& host, std::chrono::seconds timeout)
+    HTTPClient(std::unique_ptr<Sock>&& socket, const std::string& host, std::chrono::milliseconds timeout)
         : m_socket(std::move(socket)), m_host(host), m_timeout(timeout) {}
     bool SendRequest(std::string_view request);
     HTTPResponse ReadResponse();
     std::optional<std::string> Recv(std::chrono::time_point<std::chrono::steady_clock> deadline);
 };
 
-HTTPClient HTTPClient::Connect(const std::string& host, uint16_t port, std::chrono::seconds timeout)
+HTTPClient HTTPClient::Connect(SocketAddr& sockaddr, std::chrono::milliseconds timeout)
 {
-    std::vector<CService> services = Lookup(host, port, /*fAllowLookup=*/true, /*nMaxSolutions=*/256);
-    if (services.empty()) {
-        throw CConnectionFailed(strprintf("Could not resolve host: %s", host));
+    auto sock = sockaddr.Connect(timeout);
+    if (sock) {
+        return HTTPClient{std::move(sock), sockaddr.GetHost(), timeout};
+    } else {
+        throw CConnectionFailed{"Could not connect to the server"};
     }
-
-    const auto deadline{std::chrono::steady_clock::now() + timeout};
-    for (const CService& service : services) {
-        const auto time_left{std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now())};
-        if (time_left.count() <= 0) break;
-
-        auto sock = ConnectDirectly(service, /*manual_connection=*/true, time_left);
-        if (sock) return HTTPClient{std::move(sock), host, timeout};
-    }
-
-    throw CConnectionFailed{"Could not connect to the server"};
 }
 
 HTTPResponse HTTPClient::Post(const std::string& endpoint,
@@ -1152,7 +1143,7 @@ std::optional<std::string> HTTPClient::Recv(const std::chrono::time_point<std::c
     return std::string{recv_buf, static_cast<size_t>(nrecv)};
 }
 
-static UniValue CallRPC(BaseRequestHandler* rh, const std::string& strMethod, const std::vector<std::string>& args, const std::string& endpoint, const std::string& username)
+static std::vector<SocketAddr> GetSocketAddrsForConnection()
 {
     std::string host;
     // In preference order, we choose the following for the port:
@@ -1160,42 +1151,61 @@ static UniValue CallRPC(BaseRequestHandler* rh, const std::string& strMethod, co
     //     2. port in -rpcconnect (ie following : in ipv4 or ]: in ipv6)
     //     3. default port for chain
     uint16_t port{BaseParams().RPCPort()};
-    {
-        uint16_t rpcconnect_port{0};
-        const std::string rpcconnect_str = gArgs.GetArg("-rpcconnect", DEFAULT_RPCCONNECT);
-        if (!SplitHostPort(rpcconnect_str, rpcconnect_port, host)) {
+
+    uint16_t rpcconnect_port{0};
+    const std::string rpcconnect_str = gArgs.GetArg("-rpcconnect", DEFAULT_RPCCONNECT);
+
+    if (IsUnixSocketPath(rpcconnect_str)) {
+        return std::vector<SocketAddr>{SocketAddr(UnixSocketAddr(rpcconnect_str))};
+    }
+
+    if (!SplitHostPort(rpcconnect_str, rpcconnect_port, host)) {
+        // Uses argument provided as-is
+        // (rather than value parsed)
+        // to aid the user in troubleshooting
+        throw std::runtime_error(strprintf("Invalid port provided in -rpcconnect: %s", rpcconnect_str));
+    } else {
+        if (rpcconnect_port != 0) {
+            // Use the valid port provided in rpcconnect
+            port = rpcconnect_port;
+        } // else, no port was provided in rpcconnect (continue using default one)
+    }
+
+    if (std::optional<std::string> rpcport_arg = gArgs.GetArg("-rpcport")) {
+        // -rpcport was specified
+        const uint16_t rpcport_int{ToIntegral<uint16_t>(rpcport_arg.value()).value_or(0)};
+        if (rpcport_int == 0) {
             // Uses argument provided as-is
             // (rather than value parsed)
             // to aid the user in troubleshooting
-            throw std::runtime_error(strprintf("Invalid port provided in -rpcconnect: %s", rpcconnect_str));
-        } else {
-            if (rpcconnect_port != 0) {
-                // Use the valid port provided in rpcconnect
-                port = rpcconnect_port;
-            } // else, no port was provided in rpcconnect (continue using default one)
+            throw std::runtime_error(strprintf("Invalid port provided in -rpcport: %s", rpcport_arg.value()));
         }
 
-        if (std::optional<std::string> rpcport_arg = gArgs.GetArg("-rpcport")) {
-            // -rpcport was specified
-            const uint16_t rpcport_int{ToIntegral<uint16_t>(rpcport_arg.value()).value_or(0)};
-            if (rpcport_int == 0) {
-                // Uses argument provided as-is
-                // (rather than value parsed)
-                // to aid the user in troubleshooting
-                throw std::runtime_error(strprintf("Invalid port provided in -rpcport: %s", rpcport_arg.value()));
-            }
+        // Use the valid port provided
+        port = rpcport_int;
 
-            // Use the valid port provided
-            port = rpcport_int;
-
-            // If there was a valid port provided in rpcconnect,
-            // rpcconnect_port is non-zero.
-            if (rpcconnect_port != 0) {
-                tfm::format(std::cerr, "Warning: Port specified in both -rpcconnect and -rpcport. Using -rpcport %u\n", port);
-            }
+        // If there was a valid port provided in rpcconnect,
+        // rpcconnect_port is non-zero.
+        if (rpcconnect_port != 0) {
+            tfm::format(std::cerr, "Warning: Port specified in both -rpcconnect and -rpcport. Using -rpcport %u\n", port);
         }
     }
 
+    std::vector<CService> services = Lookup(host, port, /*fAllowLookup=*/true, /*nMaxSolutions=*/256);
+    if (services.empty()) {
+        throw CConnectionFailed(strprintf("Could not resolve host: %s", host));
+    }
+
+    std::vector<SocketAddr> ret;
+    ret.reserve(services.size());
+    for (const auto& service : services) {
+        ret.emplace_back(service);
+    }
+    return ret;
+}
+
+static UniValue CallRPC(BaseRequestHandler* rh, const std::string& strMethod, const std::vector<std::string>& args, const std::string& endpoint, const std::string& username)
+{
     // Set connection timeout
     const int timeout = gArgs.GetIntArg("-rpcclienttimeout", DEFAULT_HTTP_CLIENT_TIMEOUT);
     std::chrono::seconds timeout_duration;
@@ -1222,16 +1232,23 @@ static UniValue CallRPC(BaseRequestHandler* rh, const std::string& strMethod, co
     };
     std::string strRequest = rh->PrepareRequest(strMethod, args).write() + "\n";
 
+    std::vector<SocketAddr> sockaddrs{GetSocketAddrsForConnection()};
     HTTPResponse response;
-    try {
-        HTTPClient client{HTTPClient::Connect(host, port, timeout_duration)};
-        response = client.Post(endpoint, headers, strRequest);
-    } catch (const CConnectionFailed& e) {
-        const std::string formatted_error{*e.what() ? strprintf(" (%s)", e.what()) : ""};
-        throw CConnectionFailed(strprintf("Error while attempting to communicate with server %s:%d%s\n\n"
-                    "Make sure the bitcoind server is running and that you are connecting to the correct RPC port.\n"
-                    "Use \"bitcoin-cli -help\" for more info.",
-                    host, port, formatted_error));
+
+    const auto deadline{std::chrono::steady_clock::now() + timeout_duration};
+    for (auto& sockaddr : sockaddrs) {
+        const auto time_left{std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now())};
+        if (time_left.count() <= 0) break;
+        try {
+            HTTPClient client{HTTPClient::Connect(sockaddr, time_left)};
+            response = client.Post(endpoint, headers, strRequest);
+        } catch (const CConnectionFailed& e) {
+            const std::string formatted_error{*e.what() ? strprintf(" (%s)", e.what()) : ""};
+            throw CConnectionFailed(strprintf("Error while attempting to communicate with server %s%s\n\n"
+                        "Make sure the bitcoind server is running and that you are connecting to the correct RPC port.\n"
+                        "Use \"bitcoin-cli -help\" for more info.",
+                        sockaddr.ToStringAddrPort(), formatted_error));
+        }
     }
 
     if (response.status == HTTP_UNAUTHORIZED) {
