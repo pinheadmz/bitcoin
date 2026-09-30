@@ -151,24 +151,39 @@ jobs:
             fi
           }
 
+          # A hung test would block this loop forever (test_runner.py has no
+          # watchdog of its own). Guard each iteration with OpenBSD's
+          # timeout(1), which puts the child in its own process group and
+          # kills the whole group on expiry. tcpdump is started outside the
+          # child, so the capture survives and the pcap always holds packets
+          # up to the moment of the kill.
+          TIMEOUT_SECS=900
+
           i=0
           while true; do
             if [ "${CAPTURE_ENABLED}" = 1 ]; then
               start_capture
             fi
-            if /home/build/test/functional/test_runner.py interface_http --combinedlogslen=99999999 --tmpdirprefix /home --timeout-factor=8; then
+            if timeout "${TIMEOUT_SECS}" /home/build/test/functional/test_runner.py interface_http --combinedlogslen=99999999 --tmpdirprefix /home --timeout-factor=8 > iteration.log 2>&1; then
               i=$((i + 1))
               echo "=== interface_http iteration ${i} PASSED ==="
               if [ "${CAPTURE_ENABLED}" = 1 ]; then
                 stop_capture
               fi
-            else
-              echo "=== interface_http FAILED (iteration $((i + 1))); packet capture saved to ${CAPTURE_FILE} ==="
-              if [ "${CAPTURE_ENABLED}" = 1 ]; then
-                stop_capture
-              fi
-              exit 1
+              continue
             fi
+            test_rc=$?
+            if [ "${test_rc}" = 124 ]; then
+              echo "=== interface_http iteration $((i + 1)) TIMED OUT after ${TIMEOUT_SECS}s ==="
+            else
+              echo "=== interface_http FAILED (iteration $((i + 1))), rc=${test_rc} ==="
+            fi
+            echo "--- iteration.log (tail) ---"
+            tail -100 iteration.log || true
+            if [ "${CAPTURE_ENABLED}" = 1 ]; then
+              stop_capture
+            fi
+            exit 1
           done
 
       - name: Upload interface_http packet capture
