@@ -15,7 +15,7 @@ jobs:
     name: 'OpenBSD 7.9, interface_http experiment'
     runs-on: ubuntu-latest
     env:
-      PACKAGES: 'boost sqlite3 capnproto zeromq'
+      PACKAGES: 'boost sqlite3 capnproto zeromq qt6-qtbase qt6-qttools libqrencode'
       REPOSITORY: pinheadmz/bitcoin
       REF: interface-http-openbsd
     defaults:
