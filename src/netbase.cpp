@@ -11,6 +11,7 @@
 #include <sync.h>
 #include <tinyformat.h>
 #include <util/log.h>
+#include <util/overloaded.h>
 #include <util/sock.h>
 #include <util/strencodings.h>
 #include <util/string.h>
@@ -726,6 +727,78 @@ bool UnixSocketAddr::SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen
 #else
     return false;
 #endif
+}
+
+bool SocketAddr::SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen)
+{
+    if (paddr->sa_family == AF_UNIX) {
+        UnixSocketAddr addr;
+        if (!addr.SetSockAddr(paddr, addrlen)) return false;
+        m_addr = addr;
+        return true;
+    } else {
+        CService service;
+        if (!service.SetSockAddr(paddr, addrlen)) return false;
+        m_addr = service;
+        return true;
+    }
+}
+
+std::unique_ptr<Sock> SocketAddr::Connect() const
+{
+    return Connect(std::chrono::milliseconds{nConnectTimeout});
+}
+
+std::unique_ptr<Sock> SocketAddr::Connect(std::chrono::milliseconds timeout) const
+{
+    if (!IsValid()) return {};
+
+    return std::visit(util::Overloaded{
+        [timeout](const CService& svc) -> std::unique_ptr<Sock> {
+            return ConnectDirectly(svc, /*manual_connection=*/true, timeout);
+        },
+        [timeout](const UnixSocketAddr& unix_addr) -> std::unique_ptr<Sock> {
+            auto sock = CreateSock(AF_UNIX, SOCK_STREAM, 0);
+            if (!sock) {
+                LogError("Cannot create a socket for connecting to %s\n", unix_addr.ToStringAddrPort());
+                return {};
+            }
+
+            struct sockaddr_storage sockaddr;
+            socklen_t len = sizeof(sockaddr);
+            if (!unix_addr.GetSockAddr((struct sockaddr*)&sockaddr, &len)) {
+                LogInfo("Cannot get sockaddr for %s: unsupported network\n", unix_addr.ToStringAddrPort());
+                return {};
+            }
+
+            if (!ConnectToSocket(*sock,
+                                 (struct sockaddr*)&sockaddr,
+                                 len,
+                                 unix_addr.GetDestString(),
+                                 /*manual_connection=*/true,
+                                 timeout)) {
+                return {};
+            }
+            return sock;
+        }
+    }, m_addr);
+}
+
+CNetAddr SocketAddr::GetCNetAddr() const
+{
+    if (const auto* svc = std::get_if<CService>(&m_addr)) {
+        return static_cast<CNetAddr>(*svc);
+    }
+    return {};
+}
+
+std::string SocketAddr::GetHost() const
+{
+    return std::visit(util::Overloaded{
+                        [](const UnixSocketAddr&) { return std::string("localhost"); },
+                        [](const CService& svc) { return svc.ToStringAddr(); }
+                    },
+                    m_addr);
 }
 
 std::unique_ptr<Sock> Proxy::Connect() const

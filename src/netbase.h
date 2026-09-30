@@ -19,6 +19,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 extern int nConnectTimeout;
@@ -81,6 +82,63 @@ public:
 
 private:
     std::string m_path;
+};
+
+/**
+ * Wraps a generic socket address and various helpers.
+ * Variant of CNetAddr or UnixSocketAddr, which does not have bitcoin p2p properties.
+ */
+class SocketAddr
+{
+public:
+    SocketAddr() = default;
+    explicit SocketAddr(const CService& addr) : m_addr(addr) {}
+    explicit SocketAddr(const UnixSocketAddr& addr) : m_addr(addr) {}
+
+    bool IsValid() const
+    {
+        return std::visit([](const auto& addr){return addr.IsValid(); }, m_addr);
+    }
+
+    bool IsIPv4() const
+    {
+        return std::visit([](const auto& addr){return addr.IsIPv4(); }, m_addr);
+    }
+
+    bool IsIPv6() const
+    {
+        return std::visit([](const auto& addr){return addr.IsIPv6(); }, m_addr);
+    }
+
+    bool IsUnix() const
+    {
+        return std::holds_alternative<UnixSocketAddr>(m_addr);
+    }
+
+    sa_family_t GetSAFamily() const
+    {
+        return std::visit([](const auto& addr){return addr.GetSAFamily(); }, m_addr);
+    }
+
+    std::string ToStringAddrPort() const
+    {
+        return std::visit([](const auto& addr){return addr.ToStringAddrPort(); }, m_addr);
+    }
+
+    bool GetSockAddr(struct sockaddr* paddr, socklen_t* addrlen) const
+    {
+        return std::visit([paddr, addrlen](const auto& addr){return addr.GetSockAddr(paddr, addrlen); }, m_addr);
+    }
+
+    bool SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen);
+
+    std::unique_ptr<Sock> Connect() const;
+    std::unique_ptr<Sock> Connect(std::chrono::milliseconds timeout) const;
+    CNetAddr GetCNetAddr() const;
+    std::string GetHost() const;
+
+private:
+    std::variant<CService, UnixSocketAddr> m_addr;
 };
 
 class Proxy
