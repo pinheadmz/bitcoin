@@ -1,0 +1,180 @@
+name: OpenBSD
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  openbsd-interface-http:
+    name: 'OpenBSD 7.9, interface_http experiment'
+    runs-on: ubuntu-latest
+    env:
+      PACKAGES: 'boost sqlite3 capnproto zeromq'
+      REPOSITORY: pinheadmz/bitcoin
+      REF: interface-http-openbsd
+    defaults:
+      run:
+        shell: openbsd {0}
+
+    steps:
+      - name: Start OpenBSD 7.9 VM
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: '7.9'
+          prepare: pkg_add -U -v curl gtar-- cmake-core ninja python%3 py3-pip py3-zmq ${{ env.PACKAGES }}
+          sync: rsync
+          disable-cache: true
+
+      - name: Fetch source tarball
+        run: |
+          set -e
+          curl --location --fail --output source.tar.gz https://github.com/${{ env.REPOSITORY }}/archive/${{ env.REF }}.tar.gz
+          mkdir /home/bitcoin
+          gtar -xf source.tar.gz -C /home/bitcoin --strip-components=1
+          rm -rf source.tar.gz
+
+      - name: Generate CTest configuration
+        run: |
+          cat << 'EOF' > ctest_config.cmake
+          set(CTEST_SITE "${{ github.repository }}")
+          set(CTEST_BUILD_NAME "OpenBSD 7.9, interface_http experiment")
+          set(CTEST_SOURCE_DIRECTORY "/home/bitcoin")
+          set(CTEST_BINARY_DIRECTORY "/home/build")
+          set(CTEST_CMAKE_GENERATOR "Ninja")
+          cmake_host_system_information(RESULT nproc QUERY NUMBER_OF_LOGICAL_CORES)
+          EOF
+
+      - name: CDash -- Configure
+        run: |
+          cat << 'EOF' > ctest_configure.cmake
+          include(ctest_config.cmake)
+          set(configure_opts
+            "--preset dev-mode"
+            "-DWITH_USDT=OFF"
+            "-DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+          )
+          ctest_start(Experimental)
+          ctest_configure(OPTIONS "${configure_opts}")
+          EOF
+          ctest --extra-verbose --script ctest_configure.cmake
+
+      - name: CDash -- Build
+        run: |
+          cat << 'EOF' > ctest_build.cmake
+          include(ctest_config.cmake)
+          ctest_start(APPEND)
+          ctest_build(PARALLEL_LEVEL ${nproc})
+          EOF
+          ctest --extra-verbose --script ctest_build.cmake
+
+      - name: Check 'bitcoind' executable
+        run: |
+          set -e
+          ls -l /home/build/bin/bitcoind
+          file /home/build/bin/bitcoind
+          /home/build/bin/bitcoind -version
+
+      - name: Install functional test dependencies
+        run: |
+          set -e
+          # The system's `capnproto` package ships static libraries
+          # built without -fPIC, causing relocation errors when linking
+          # pycapnp's shared extension module.
+          #
+          # A two-part workaround is applied:
+          #  1. Force building the bundled libcapnp, which is compiled
+          #     with -fPIC.
+          #  2. Override LDCXXSHARED to drop the -L/usr/local/lib/ that
+          #     Python's sysconfig injects ahead of the bundled library
+          #     directories, and which would otherwise resolve -lcapnp*
+          #     and -lkj* to the system's static archives.
+          if pkg_info -e 'capnproto-*'; then
+            LDCXXSHARED="c++ -pthread -shared -fPIC" pip3 install --break-system-packages pycapnp -C force-bundled-libcapnp=True
+          else
+            pip3 install --break-system-packages pycapnp
+          fi
+          python3 --version
+          python3 -c "import sqlite3; print(f'SQLite {sqlite3.sqlite_version}')"
+          python3 -c "import zmq; print(f'pyzmq {zmq.__version__} / libzmq {zmq.zmq_version()}')"
+
+      - name: Run interface_http.py with tcpdump capture
+        run: |
+          set -e
+          ulimit -n 1024
+          export PYTHONUNBUFFERED=1
+
+          # Capture runs as root (OpenBSD has no sudo; doas if needed).
+          SUDO_PREFIX=""
+          if [ "$(id -u)" != 0 ]; then
+            if command -v doas >/dev/null 2>&1 && doas -n true 2>/dev/null; then
+              SUDO_PREFIX="doas -n"
+            elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              SUDO_PREFIX="sudo -n"
+            fi
+          fi
+
+          # Run interface_http.py in a loop until it fails. On each iteration
+          # start a fresh packet capture, overwriting the capture file, so it
+          # always contains the most recent iteration. The capture file is
+          # written into the workspace, which is synced back to the host by
+          # the vm action (rsync), where the next step uploads it as artifact.
+          CAPTURE_FILE="$(pwd)/interface_http.pcap"
+          CAPTURE_ENABLED=1
+          if ! command -v tcpdump >/dev/null 2>&1; then
+            echo "WARNING: tcpdump unavailable; packet capture disabled"
+            CAPTURE_ENABLED=0
+          fi
+
+          stop_capture() {
+            ${SUDO_PREFIX} pkill -x tcpdump 2>/dev/null || true
+            wait "${CAPTURE_SHELL_PID}" 2>/dev/null || true
+            sleep 1
+            ${SUDO_PREFIX} chmod 644 "${CAPTURE_FILE}" 2>/dev/null || true
+          }
+
+          start_capture() {
+            rm -f "${CAPTURE_FILE}"
+            # -U: packet-buffered output. tcpdump truncates the capture file on
+            # startup, so each iteration overwrites the previous capture.
+            ${SUDO_PREFIX} tcpdump -i lo0 -n -s 0 -U -w "${CAPTURE_FILE}" tcp 2>/dev/null &
+            CAPTURE_SHELL_PID=$!
+            sleep 1
+            if [ ! -s "${CAPTURE_FILE}" ]; then
+              echo "WARNING: tcpdump did not start writing ${CAPTURE_FILE}; packet capture disabled"
+              CAPTURE_ENABLED=0
+            fi
+          }
+
+          i=0
+          while true; do
+            if [ "${CAPTURE_ENABLED}" = 1 ]; then
+              start_capture
+            fi
+            if /home/build/test/functional/test_runner.py interface_http --combinedlogslen=99999999 --tmpdirprefix /home --timeout-factor=8; then
+              i=$((i + 1))
+              echo "=== interface_http iteration ${i} PASSED ==="
+              if [ "${CAPTURE_ENABLED}" = 1 ]; then
+                stop_capture
+              fi
+            else
+              echo "=== interface_http FAILED (iteration $((i + 1))); packet capture saved to ${CAPTURE_FILE} ==="
+              if [ "${CAPTURE_ENABLED}" = 1 ]; then
+                stop_capture
+              fi
+              exit 1
+            fi
+          done
+
+      - name: Upload interface_http packet capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interface_http-pcap-openbsd-${{ github.run_id }}
+          path: interface_http.pcap
+          if-no-files-found: ignore

@@ -114,7 +114,7 @@ jobs:
     # one for the branch push and one for the pull request.
     # This can be avoided by setting SKIP_BRANCH_PUSH=true as a custom env variable
     # in Github repository settings.
-    if: true
+    if: false
 
     timeout-minutes: 120
 
