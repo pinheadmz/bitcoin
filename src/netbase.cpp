@@ -677,6 +677,57 @@ std::unique_ptr<Sock> ConnectDirectly(const CService& dest,
     return sock;
 }
 
+bool UnixSocketAddr::GetSockAddr(struct sockaddr* paddr, socklen_t* addrlen) const
+{
+#ifdef HAVE_SOCKADDR_UN
+    if (!IsValid()) return false;
+    if (*addrlen < (socklen_t)sizeof(struct sockaddr_un))
+        return false;
+    *addrlen = sizeof(struct sockaddr_un);
+    struct sockaddr_un *paddrun = (struct sockaddr_un*)paddr;
+    memset(paddrun, 0, *addrlen);
+    paddrun->sun_family = AF_UNIX;
+    auto path{GetDestString()};
+    // leave the last char in addrun.sun_path[] to be always '\0'
+    memcpy(paddrun->sun_path, path.c_str(), std::min(sizeof(paddrun->sun_path) - 1, path.length()));
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool UnixSocketAddr::SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen)
+{
+#ifdef HAVE_SOCKADDR_UN
+    // Where does the filesystem path start inside the struct
+    constexpr size_t offset = offsetof(sockaddr_un, sun_path);
+    // Caller provided an invalid-sized sockaddr
+    if (addrlen < offset || addrlen > sizeof(sockaddr_un)) return false;
+    if (paddr->sa_family != AF_UNIX) return false;
+    // Extract the filesystem path from the sockaddr
+    const auto* sun = reinterpret_cast<const sockaddr_un*>(paddr);
+    // The path may or may not be NUL-terminated within addrlen, and may be
+    // followed by any number of NUL padding bytes (e.g. from GetSockAddr()).
+    const size_t len{strnlen(sun->sun_path, addrlen - offset)};
+    std::string path;
+    if (len == 0) {
+        // Common outcome because Unix sockets can connect() without bind()
+        // so there is no user-visible source address.
+        path = std::string("<unnamed unix socket>");
+    } else {
+        path = std::string(sun->sun_path, len);
+    }
+    // Restore the "unix:" prefix to pass IsValid() and IsUnixSocketPath()
+    path = ADDR_PREFIX_UNIX + path;
+    // Reject paths that fill sun_path entirely with no room for a terminator
+    if (!IsUnixSocketPath(path)) return false;
+    *this = UnixSocketAddr(path);
+    return true;
+#else
+    return false;
+#endif
+}
+
 std::unique_ptr<Sock> Proxy::Connect() const
 {
     if (!IsValid()) return {};

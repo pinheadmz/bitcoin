@@ -57,6 +57,32 @@ static inline bool operator&(ConnectionDirection a, ConnectionDirection b) {
  */
 bool IsUnixSocketPath(const std::string& name);
 
+/**
+ * A variant of CService for UNIX domain sockets
+ */
+class UnixSocketAddr
+{
+public:
+    UnixSocketAddr() = default;
+    explicit UnixSocketAddr(std::string path) : m_path(path)
+    {
+        assert(IsValid());
+    }
+
+    bool IsValid() const { return IsUnixSocketPath(m_path); }
+    sa_family_t GetSAFamily() const { return AF_UNIX; }
+    // Unix sockets don't have a port but we like to match the CService API
+    std::string ToStringAddrPort() const { return m_path; }
+    bool GetSockAddr(struct sockaddr* paddr, socklen_t* addrlen) const;
+    bool SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen);
+    std::string GetDestString() const { return m_path.substr(ADDR_PREFIX_UNIX.length()); }
+    bool IsIPv4() const {return false; }
+    bool IsIPv6() const {return false; }
+
+private:
+    std::string m_path;
+};
+
 class Proxy
 {
 public:
