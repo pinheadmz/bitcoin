@@ -19,6 +19,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 extern int nConnectTimeout;
@@ -53,9 +54,56 @@ static inline bool operator&(ConnectionDirection a, ConnectionDirection b) {
  *
  * @param      name     The string provided by the user representing a local path
  *
- * @returns Whether the string has proper format, length, and points to an existing file path
+ * @returns Whether the string has the "unix:" prefix and a path short enough
+ *          to fit in sockaddr_un::sun_path. The filesystem is not consulted.
  */
 bool IsUnixSocketPath(const std::string& name);
+
+/**
+ * A UNIX domain socket address (a local filesystem path), exposing the subset
+ * of the CService API needed to create, bind and connect sockets.
+ *
+ * Like CService, an instance may be invalid: constructing from a string that
+ * is not a valid "unix:" path (see IsUnixSocketPath()) yields an object for
+ * which IsValid() returns false. Callers must check IsValid() before use.
+ */
+class UnixSocketAddr
+{
+public:
+    UnixSocketAddr() = default;
+    /** @param[in] path Full address string including the "unix:" prefix */
+    explicit UnixSocketAddr(std::string path) : m_path(std::move(path)) {}
+
+    [[nodiscard]] bool IsValid() const { return IsUnixSocketPath(m_path); }
+    [[nodiscard]] sa_family_t GetSAFamily() const { return AF_UNIX; }
+    /** The full address string including the "unix:" prefix.
+     *  Unix sockets don't have a port but we like to match the CService API. */
+    [[nodiscard]] std::string ToStringAddrPort() const { return m_path; }
+    /**
+     * Fill a sockaddr_un with this address.
+     * @param[out]    paddr   Buffer to fill, must be at least sizeof(sockaddr_un)
+     * @param[in,out] addrlen Capacity of paddr on input, bytes written on output
+     * @returns false if the address is invalid or the buffer is too small
+     */
+    bool GetSockAddr(struct sockaddr* paddr, socklen_t* addrlen) const;
+    /**
+     * Set this address from a sockaddr_un as returned by accept().
+     * @returns false if the family or length is wrong, or if the path fills
+     *          sun_path entirely leaving no room for a terminator
+     */
+    bool SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen);
+    /** The filesystem path without the "unix:" prefix, or "" if invalid */
+    [[nodiscard]] std::string GetDestString() const
+    {
+        if (!IsValid()) return {};
+        return m_path.substr(ADDR_PREFIX_UNIX.length());
+    }
+    [[nodiscard]] bool IsIPv4() const { return false; }
+    [[nodiscard]] bool IsIPv6() const { return false; }
+
+private:
+    std::string m_path;
+};
 
 class Proxy
 {

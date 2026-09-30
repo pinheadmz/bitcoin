@@ -16,9 +16,12 @@
 #include <util/string.h>
 #include <util/time.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -675,6 +678,64 @@ std::unique_ptr<Sock> ConnectDirectly(const CService& dest,
     }
 
     return sock;
+}
+
+bool UnixSocketAddr::GetSockAddr(struct sockaddr* paddr, socklen_t* addrlen) const
+{
+#ifdef HAVE_SOCKADDR_UN
+    if (!IsValid()) return false;
+    if (*addrlen < static_cast<socklen_t>(sizeof(sockaddr_un))) return false;
+    *addrlen = sizeof(sockaddr_un);
+    auto* paddrun{reinterpret_cast<sockaddr_un*>(paddr)};
+    std::memset(paddrun, 0, *addrlen);
+    paddrun->sun_family = AF_UNIX;
+    const std::string path{GetDestString()};
+    // leave the last char in sun_path[] to be always '\0'
+    std::memcpy(paddrun->sun_path, path.c_str(), std::min(sizeof(paddrun->sun_path) - 1, path.length()));
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool UnixSocketAddr::SetSockAddr(const struct sockaddr* paddr, socklen_t addrlen)
+{
+#ifdef HAVE_SOCKADDR_UN
+    // Where does the filesystem path start inside the struct
+    constexpr size_t offset = offsetof(sockaddr_un, sun_path);
+    // Caller provided an invalid-sized sockaddr
+    if (addrlen < offset || addrlen > sizeof(sockaddr_un)) return false;
+    if (paddr->sa_family != AF_UNIX) return false;
+    // Extract the filesystem path from the sockaddr
+    const auto* sun = reinterpret_cast<const sockaddr_un*>(paddr);
+    // The path may or may not be NUL-terminated within addrlen, and may be
+    // followed by any number of NUL padding bytes (e.g. from GetSockAddr()).
+    const size_t len{strnlen(sun->sun_path, addrlen - offset)};
+    std::string path;
+    if (len == 0) {
+        // Common outcome because Unix sockets can connect() without bind() and
+        // on Linux because abstract-namespace clients have a leading NUL in
+        // sun_path, so there is no user-visible source address.
+        // This only affects how a remote client is displayed in logs.
+        path = "unix";
+    } else {
+        path = std::string(sun->sun_path, len);
+        // The client path goes into logs and JSONRPCRequest::peerAddr; reject
+        // control characters a local client could place there to forge log
+        // lines (e.g. a Linux abstract-namespace name with a \0 prefix).
+        if (std::any_of(path.begin(), path.end(), [](char c) { return c < 0x20 || c == 0x7F; })) {
+            path = "unix";
+        }
+    }
+    // Restore the "unix:" prefix to pass IsValid() and IsUnixSocketPath()
+    path = ADDR_PREFIX_UNIX + path;
+    // Reject paths that fill sun_path entirely with no room for a terminator
+    if (!IsUnixSocketPath(path)) return false;
+    *this = UnixSocketAddr(path);
+    return true;
+#else
+    return false;
+#endif
 }
 
 std::unique_ptr<Sock> Proxy::Connect() const
