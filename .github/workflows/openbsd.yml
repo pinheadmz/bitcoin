@@ -103,7 +103,7 @@ jobs:
           python3 -c "import sqlite3; print(f'SQLite {sqlite3.sqlite_version}')"
           python3 -c "import zmq; print(f'pyzmq {zmq.__version__} / libzmq {zmq.zmq_version()}')"
 
-      - name: Run interface_http.py with tcpdump capture
+      - name: Run full extended suite like hebasto/bitcoin-core-nightly PR369
         run: |
           set -e
           ulimit -n 1024
@@ -119,11 +119,6 @@ jobs:
             fi
           fi
 
-          # Run interface_http.py in a loop until it fails. On each iteration
-          # start a fresh packet capture, overwriting the capture file, so it
-          # always contains the most recent iteration. The capture file is
-          # written into the workspace, which is synced back to the host by
-          # the vm action (rsync), where the next step uploads it as artifact.
           CAPTURE_FILE="$(pwd)/interface_http.pcap"
           CAPTURE_ENABLED=1
           if ! command -v tcpdump >/dev/null 2>&1; then
@@ -135,14 +130,14 @@ jobs:
             ${SUDO_PREFIX} pkill -x tcpdump 2>/dev/null || true
             wait "${CAPTURE_SHELL_PID}" 2>/dev/null || true
             sleep 1
-            ${SUDO_PREFIX} chmod 644 "${CAPTURE_FILE}" 2>/dev/null || true
+            ${SUDO_PREFIX} chmod 644 interface_http.pcap* 2>/dev/null || true
           }
 
           start_capture() {
-            rm -f "${CAPTURE_FILE}"
-            # -U: packet-buffered output. tcpdump truncates the capture file on
-            # startup, so each iteration overwrites the previous capture.
-            ${SUDO_PREFIX} tcpdump -i lo0 -n -s 0 -U -w "${CAPTURE_FILE}" tcp 2>/dev/null &
+            # -C 32 -W 8: circular ring of 8 x 32MB so a long suite/hang can't
+            # fill the disk; the most recent traffic is always retained.
+            rm -f interface_http.pcap*
+            ${SUDO_PREFIX} tcpdump -i lo0 -n -s 0 -U -w "${CAPTURE_FILE}" -C 32 -W 8 tcp 2>/dev/null &
             CAPTURE_SHELL_PID=$!
             sleep 1
             if [ ! -s "${CAPTURE_FILE}" ]; then
@@ -151,20 +146,70 @@ jobs:
             fi
           }
 
-          # A hung test would block this loop forever (test_runner.py has no
-          # watchdog of its own). Guard each iteration with OpenBSD's
-          # timeout(1), which puts the child in its own process group and
-          # kills the whole group on expiry. tcpdump is started outside the
-          # child, so the capture survives and the pcap always holds packets
-          # up to the moment of the kill.
-          TIMEOUT_SECS=900
+          collect_evidence() {
+            echo "=== collecting test tmpdirs from the VM ==="
+            if ls -d /home/test_runner_* >/dev/null 2>&1; then
+              tar czf "$(pwd)/interface_http-debug.tar.gz" /home/test_runner_* 2>/dev/null || true
+              ls -l interface_http-debug.tar.gz || true
+            fi
+          }
 
+          # ---- Phase 1: full extended suite, exactly like PR 369 (-j 8) ----
+          # interface_http.py is expected to pass solo (7 s on this VM) but
+          # hung >5 h twice in hebasto's runs as the last remaining suite
+          # job. Run the whole suite under a hard timeout so a hang is
+          # converted into artifacts instead of a silent 5-hour wait.
+          if ! timeout 14400 /home/build/test/functional/test_runner.py -j 8 --combinedlogslen=99999999 --tmpdirprefix /home --extended --exclude feature_reindex_init --exclude interface_rest --exclude p2p_private_broadcast_retry_v1 --exclude wallet_send --timeout-factor=8 > suite.log 2>&1; then
+            suite_rc=$?
+            if [ "${suite_rc}" = 124 ]; then
+              echo "=== SUITE TIMED OUT after 14400s (test hang, like hebasto issue 368) ==="
+            else
+              echo "=== SUITE FAILED, rc=${suite_rc} ==="
+            fi
+            echo "--- suite.log (tail) ---"
+            tail -100 suite.log || true
+            stop_capture
+            collect_evidence
+            exit 1
+          fi
+          echo "=== SUITE PASSED (no hang observed under -j 8) ==="
+          stop_capture
+
+      - name: Solo-loop interface_http with per-iteration watchdog
+        run: |
+          set -e
+          ulimit -n 1024
+          export PYTHONUNBUFFERED=1
+
+          SUDO_PREFIX=""
+          if [ "$(id -u)" != 0 ]; then
+            SUDO_PREFIX="doas -n"
+          fi
+
+          CAPTURE_FILE="$(pwd)/interface_http.pcap"
+          CAPTURE_ENABLED=1
+          stop_capture() {
+            ${SUDO_PREFIX} pkill -x tcpdump 2>/dev/null || true
+            sleep 1
+            ${SUDO_PREFIX} chmod 644 interface_http.pcap* 2>/dev/null || true
+          }
+          start_capture() {
+            rm -f interface_http.pcap*
+            ${SUDO_PREFIX} tcpdump -i lo0 -n -s 0 -U -w "${CAPTURE_FILE}" -C 32 -W 8 tcp 2>/dev/null &
+            CAPTURE_SHELL_PID=$!
+            sleep 1
+          }
+
+          # Each solo iteration gets a 900 s watchdog: the test passes in ~7 s
+          # here, so a hang (the thing we hunt) is cut short and evidence is
+          # preserved. On any fail/timeout the tmpdirs are collected for
+          # post-mortem. Loop until GH's 6h job limit otherwise.
           i=0
           while true; do
             if [ "${CAPTURE_ENABLED}" = 1 ]; then
               start_capture
             fi
-            if timeout "${TIMEOUT_SECS}" /home/build/test/functional/test_runner.py interface_http --combinedlogslen=99999999 --tmpdirprefix /home --timeout-factor=8 > iteration.log 2>&1; then
+            if timeout 900 /home/build/test/functional/test_runner.py interface_http --combinedlogslen=99999999 --tmpdirprefix /home --timeout-factor=8 > iteration.log 2>&1; then
               i=$((i + 1))
               echo "=== interface_http iteration ${i} PASSED ==="
               if [ "${CAPTURE_ENABLED}" = 1 ]; then
@@ -174,7 +219,7 @@ jobs:
             fi
             test_rc=$?
             if [ "${test_rc}" = 124 ]; then
-              echo "=== interface_http iteration $((i + 1)) TIMED OUT after ${TIMEOUT_SECS}s ==="
+              echo "=== interface_http iteration $((i + 1)) TIMED OUT after 900s ==="
             else
               echo "=== interface_http FAILED (iteration $((i + 1))), rc=${test_rc} ==="
             fi
@@ -183,13 +228,25 @@ jobs:
             if [ "${CAPTURE_ENABLED}" = 1 ]; then
               stop_capture
             fi
+            echo "=== collecting test tmpdirs from the VM ==="
+            if ls -d /home/test_runner_* >/dev/null 2>&1; then
+              tar czf "$(pwd)/interface_http-debug.tar.gz" /home/test_runner_* 2>/dev/null || true
+            fi
             exit 1
           done
 
-      - name: Upload interface_http packet capture
+      - name: Upload packet capture
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: interface_http-pcap-openbsd-${{ github.run_id }}
-          path: interface_http.pcap
+          path: interface_http.pcap*
+          if-no-files-found: ignore
+
+      - name: Upload test debug logs and data dirs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interface_http-debug-openbsd-${{ github.run_id }}
+          path: interface_http-debug.tar.gz
           if-no-files-found: ignore
