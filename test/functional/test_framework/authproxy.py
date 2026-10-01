@@ -44,6 +44,7 @@ import socket
 import time
 import urllib.parse
 
+from .netutil import UnixHTTPConnection
 from .util import JSONRPCException, assert_equal
 
 HTTP_TIMEOUT = 30
@@ -62,7 +63,7 @@ class AuthServiceProxy():
     __id_count = 0
 
     # ensure_ascii: escape unicode as \uXXXX, passed to json.dumps
-    def __init__(self, service_url, service_name=None, timeout=HTTP_TIMEOUT, connection=None, ensure_ascii=True):
+    def __init__(self, service_url, service_name=None, timeout=HTTP_TIMEOUT, connection=None, ensure_ascii=True, http_unix_socket_path=None):
         self.__service_url = service_url
         self._service_name = service_name
         self.ensure_ascii = ensure_ascii  # can be toggled on the fly by tests
@@ -76,6 +77,7 @@ class AuthServiceProxy():
         # "Invalid argument" exception in Python's HTTP(S) client
         # library on some operating systems (e.g. OpenBSD, FreeBSD)
         self.timeout = min(timeout, 2147483)
+        self.http_unix_socket_path = http_unix_socket_path
         self._set_conn(connection)
 
     def __getattr__(self, name):
@@ -86,7 +88,7 @@ class AuthServiceProxy():
             name = "%s.%s" % (self._service_name, name)
         if not self.reuse_http_connections:
             self._set_conn()
-        return AuthServiceProxy(self.__service_url, name, connection=self.__conn)
+        return AuthServiceProxy(self.__service_url, name, connection=self.__conn, http_unix_socket_path=self.http_unix_socket_path)
 
     def _request(self, method, path, postdata):
         '''
@@ -211,6 +213,8 @@ class AuthServiceProxy():
         if connection:
             self.__conn = connection
             self.timeout = connection.timeout
+        elif self.http_unix_socket_path:
+            self.__conn = UnixHTTPConnection(self.__url.hostname, str(self.http_unix_socket_path), timeout=self.timeout)
         elif self.__url.scheme == 'https':
             self.__conn = http.client.HTTPSConnection(self.__url.hostname, port, timeout=self.timeout)
         else:

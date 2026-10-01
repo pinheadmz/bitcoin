@@ -209,6 +209,7 @@ BASE_SCRIPTS = [
     'wallet_reindex.py',
     'wallet_reorgsrestore.py',
     'interface_http.py',
+    'interface_http.py --httpunix',
     'interface_rpc.py',
     'interface_usdt_coinselection.py',
     'interface_usdt_mempool.py',

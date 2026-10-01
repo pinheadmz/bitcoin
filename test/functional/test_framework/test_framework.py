@@ -25,6 +25,7 @@ import time
 from .address import create_deterministic_address_bcrt1_p2tr_op_true
 from . import coverage
 from .messages import CAddress
+from .netutil import test_unix_socket
 from .p2p import NetworkThread
 from .test_node import TestNode
 from .util import (
@@ -203,6 +204,8 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                             help="Explicitly use v1 transport (can be used to overwrite global --v2transport option)")
         parser.add_argument("--test_methods", dest="test_methods", nargs='*',
                             help="Run specified test methods sequentially instead of the full test. Use only for methods that do not depend on any context set up in run_test or other methods.")
+        parser.add_argument("--httpunix", dest="httpunix", default=False, action="store_true",
+                            help="use unix sockets instead of TCP for all HTTP communication")
 
         self.add_options(parser)
         # Running TestShell in a Jupyter notebook causes an additional -f argument
@@ -267,6 +270,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             if not self.supports_cli:
                 raise SkipTest("--usecli specified but test does not support using CLI")
             self.skip_if_no_cli()
+        if self.options.httpunix:
+            if not test_unix_socket():
+                raise SkipTest("--httpunix specified but platform does not support unix sockets")
         self.skip_test_if_missing_module()
         self.setup_chain()
         self.setup_network()
@@ -480,6 +486,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 use_cli=self.options.usecli,
                 v2transport=self.options.v2transport,
                 uses_wallet=self.uses_wallet,
+                http_unix=self.options.httpunix
             )
             init.update(extra_init[i])
             test_node_i = TestNode(
