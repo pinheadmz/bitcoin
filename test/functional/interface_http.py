@@ -5,7 +5,7 @@
 """Test the HTTP server basics."""
 
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.netutil import NETWORK_ERRORS
+from test_framework.netutil import NETWORK_ERRORS, UnixHTTPConnection
 from test_framework.util import (
     assert_equal,
     assert_raises,
@@ -16,7 +16,9 @@ from test_framework.wallet import MiniWallet
 
 import concurrent.futures
 import http.client
+import os
 import socket
+import stat
 import threading
 import time
 import urllib.parse
@@ -29,13 +31,17 @@ MAX_BODY_SIZE = 32 * 1024 * 1024
 
 class BitcoinHTTPConnection:
     def __init__(self, node):
+        self.node = node
         self.url = urllib.parse.urlparse(node.url)
         self.authpair = f'{self.url.username}:{self.url.password}'
         self.headers = {"Authorization": f"Basic {str_to_b64str(self.authpair)}"}
         self.reset_conn()
 
     def reset_conn(self):
-        self.conn = http.client.HTTPConnection(self.url.hostname, self.url.port)
+        if self.node.http_unix_socket_path:
+            self.conn = UnixHTTPConnection(self.url.hostname, str(self.node.http_unix_socket_path))
+        else:
+            self.conn = http.client.HTTPConnection(self.url.hostname, self.url.port)
         self.conn.connect()
 
     def sock_closed(self):
@@ -183,15 +189,22 @@ class HTTPBasicsTest (BitcoinTestFramework):
 
 
     def check_socket_exclusivity(self):
-        self.log.info("Checking that another process cannot bind the HTTP listen port")
-        url = urllib.parse.urlparse(self.node.url)
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as competing_listener:
-            competing_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # Ill-configured sockets permit port reuse unless the original
-            # listener requested exclusive address use.
-            assert_raises(
-                OSError,
-                lambda: competing_listener.bind((url.hostname, url.port)))
+        if self.options.httpunix:
+            # bind() on an existing unix socket path always fails with EADDRINUSE,
+            # whether or not anyone is listening, so there is no exclusivity
+            # option to exercise. Just check that bitcoind created a socket.
+            self.log.info("Checking that the HTTP unix socket path is a socket")
+            assert stat.S_ISSOCK(os.stat(self.node.http_unix_socket_path).st_mode)
+        else:
+            self.log.info("Checking that another process cannot bind the HTTP listen port")
+            url = urllib.parse.urlparse(self.node.url)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as competing_listener:
+                competing_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                # Ill-configured sockets permit port reuse unless the original
+                # listener requested exclusive address use.
+                assert_raises(
+                    OSError,
+                    lambda: competing_listener.bind((url.hostname, url.port)))
 
 
     def check_keepalive_connection(self):
