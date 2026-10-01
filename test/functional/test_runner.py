@@ -776,14 +776,44 @@ class TestHandler:
             test = self.test_list.popleft()
             portseed = len(self.test_list)
             portseed_arg = ["--portseed={}".format(portseed)]
-            log_stdout = tempfile.SpooledTemporaryFile(max_size=2**16)
-            log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16)
             test_argv = test.split()
             testdir = "{}/{}_{}".format(self.tmpdir, re.sub(".py$", "", test_argv[0]), portseed)
             tmpdir_arg = ["--tmpdir={}".format(testdir)]
 
+            # WATCHDOG_HANG_DEBUG: tee each running test's output to disk
+            # continuously. test_runner normally buffers per-test stdout in
+            # memory until the test exits, so a hung test produces zero
+            # output and its location inside the test is unknowable. When
+            # WATCHDOG_HANG_DEBUG=1, instead stream the child's output
+            # directly to live files under <tmpdir>/live/, one per test.
+            if os.environ.get("WATCHDOG_HANG_DEBUG") == "1":
+                live_dir = os.path.join(self.tmpdir, "live")
+                os.makedirs(live_dir, exist_ok=True)
+                live_log = open("{}.live.log".format(
+                    os.path.join(live_dir, re.sub(".py$", "", test_argv[0]))),
+                    mode="w", buffering=1)
+                log_stdout = live_log
+                log_stderr = live_log
+            else:
+                log_stdout = tempfile.SpooledTemporaryFile(max_size=2**16)
+                log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16)
+
             def proc_wait(task):
                 task[2].wait()
+                # WATCHDOG_HANG_DEBUG: the tee files were opened for write;
+                # re-open them for reading here so done-test handling is
+                # unchanged (read both log handles as usual).
+                if os.environ.get("WATCHDOG_HANG_DEBUG") == "1":
+                    with open(task[4].name, "rb") as f:
+                        data = f.read()
+                    spooled = tempfile.SpooledTemporaryFile(max_size=2**16)
+                    spooled.write(data)
+                    spooled.seek(0)
+                    task[4] = spooled
+                    # stdout and stderr share one file; give the reader an
+                    # empty stderr so "Passed" stays true.
+                    empt = tempfile.SpooledTemporaryFile(max_size=2**16)
+                    task[5] = empt
                 return task
 
             task = [
