@@ -159,6 +159,11 @@ jobs:
           # hung >5 h twice in hebasto's runs as the last remaining suite
           # job. Run the whole suite under a hard timeout so a hang is
           # converted into artifacts instead of a silent 5-hour wait.
+          #
+          # WATCHDOG_HANG_DEBUG=1 (in test/functional/test_runner.py) streams
+          # every running test's output to <tmpdir>/live/<name>.live.log, so
+          # if the suite hangs we can read exactly where inside the test.
+          export WATCHDOG_HANG_DEBUG=1
           if ! timeout 14400 /home/build/test/functional/test_runner.py -j 8 --combinedlogslen=99999999 --tmpdirprefix /home --extended --exclude feature_reindex_init --exclude interface_rest --exclude p2p_private_broadcast_retry_v1 --exclude wallet_send --timeout-factor=8 > suite.log 2>&1; then
             suite_rc=$?
             if [ "${suite_rc}" = 124 ]; then
@@ -168,6 +173,12 @@ jobs:
             fi
             echo "--- suite.log (tail) ---"
             tail -100 suite.log || true
+            echo "--- live logs of still-running tests (hang position) ---"
+            for f in /home/test_runner_*/live/*.live.log; do
+              [ -f "${f}" ] || continue
+              echo "--- ${f} (last 30 lines) ---"
+              tail -30 "${f}" || true
+            done
             stop_capture
             collect_evidence
             exit 1
@@ -204,14 +215,27 @@ jobs:
           # here, so a hang (the thing we hunt) is cut short and evidence is
           # preserved. On any fail/timeout the tmpdirs are collected for
           # post-mortem. Loop until GH's 6h job limit otherwise.
+          #
+          # The loop is time-capped at 4h30m so a final rsync copyback and the
+          # artifact-upload steps still run inside GitHub's 6h job limit --
+          # a 6h kill would silently destroy everything in the VM.
+          LOOP_DEADLINE=$(( $(date +%s) + 16200 ))
           i=0
           while true; do
+            now=$(date +%s)
+            if [ "${now}" -ge "${LOOP_DEADLINE}" ]; then
+              echo "=== LOOP REACHED 4h30m WALL-CLOCK CAP after ${i} clean iterations; stopping cleanly ==="
+              exit 0
+            fi
             if [ "${CAPTURE_ENABLED}" = 1 ]; then
               start_capture
             fi
             if timeout 900 /home/build/test/functional/test_runner.py interface_http --combinedlogslen=99999999 --tmpdirprefix /home --timeout-factor=8 > iteration.log 2>&1; then
               i=$((i + 1))
               echo "=== interface_http iteration ${i} PASSED ==="
+              # Heartbeat: append a compact progress trace so any later
+              # snapshot shows how far the loop got and iteration pace.
+              echo "$(date -u +%FT%TZ) iteration ${i} PASSED" >> live-debug.txt
               if [ "${CAPTURE_ENABLED}" = 1 ]; then
                 stop_capture
               fi
@@ -223,6 +247,7 @@ jobs:
             else
               echo "=== interface_http FAILED (iteration $((i + 1))), rc=${test_rc} ==="
             fi
+            echo "$(date -u +%FT%TZ) iteration $((i + 1)) rc=${test_rc}" >> live-debug.txt
             echo "--- iteration.log (tail) ---"
             tail -100 iteration.log || true
             if [ "${CAPTURE_ENABLED}" = 1 ]; then
@@ -235,12 +260,29 @@ jobs:
             exit 1
           done
 
+      - name: Snapshot live logs (mid-run evidence)
+        if: always()
+        run: |
+          # A no-op VM shell: with sync:rsync, ending ANY vm-side step pulls
+          # the VM workspace back to the host. Steps are cheap; the uploads
+          # below then grab whatever evidence exists. To keep mid-run
+          # snapshots flowing, the solo loop itself periodically writes the
+          # tail of iteration.log into live-debug.txt inside the workspace.
+          echo "snapshot tick: $(date)"
       - name: Upload packet capture
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: interface_http-pcap-openbsd-${{ github.run_id }}
           path: interface_http.pcap*
+          if-no-files-found: ignore
+
+      - name: Upload live-debug heartbeat
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interface_http-heartbeat-openbsd-${{ github.run_id }}
+          path: live-debug.txt
           if-no-files-found: ignore
 
       - name: Upload test debug logs and data dirs
