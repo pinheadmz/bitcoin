@@ -976,14 +976,14 @@ BOOST_FIXTURE_TEST_CASE(proxy_api, ConnectRecordingSockTestingSetup)
         const Proxy proxy4{ipv4, isolation};
         BOOST_CHECK(proxy4.IsValid());
         BOOST_CHECK_EQUAL(proxy4.m_tor_stream_isolation, isolation);
-        BOOST_CHECK_EQUAL(proxy4.GetFamily(), AF_INET);
+        BOOST_CHECK_EQUAL(proxy4.GetSAFamily(), AF_INET);
         BOOST_CHECK_EQUAL(proxy4.ToString(), "127.0.0.1:9050");
         CheckConnect(proxy4, AF_INET, IPPROTO_TCP, "127.0.0.1:9050");
 
         const Proxy proxy6{ipv6, isolation};
         BOOST_CHECK(proxy6.IsValid());
         BOOST_CHECK_EQUAL(proxy6.m_tor_stream_isolation, isolation);
-        BOOST_CHECK_EQUAL(proxy6.GetFamily(), AF_INET6);
+        BOOST_CHECK_EQUAL(proxy6.GetSAFamily(), AF_INET6);
         BOOST_CHECK_EQUAL(proxy6.ToString(), "[::1]:9050");
         CheckConnect(proxy6, AF_INET6, IPPROTO_TCP, "[::1]:9050");
     }
@@ -992,10 +992,10 @@ BOOST_FIXTURE_TEST_CASE(proxy_api, ConnectRecordingSockTestingSetup)
     // Unix socket proxies
     const std::string path{"unix:/tmp/tor/socks.sock"};
     for (const bool isolation : {false, true}) {
-        const Proxy proxy{path, isolation};
+        const Proxy proxy{UnixSocketAddr{path}, isolation};
         BOOST_CHECK(proxy.IsValid());
         BOOST_CHECK_EQUAL(proxy.m_tor_stream_isolation, isolation);
-        BOOST_CHECK_EQUAL(proxy.GetFamily(), AF_UNIX);
+        BOOST_CHECK_EQUAL(proxy.GetSAFamily(), AF_UNIX);
         BOOST_CHECK_EQUAL(proxy.ToString(), path);
         CheckConnect(proxy, AF_UNIX, 0, path);
     }
@@ -1005,7 +1005,7 @@ BOOST_FIXTURE_TEST_CASE(proxy_api, ConnectRecordingSockTestingSetup)
     CreateSock = [](int, int, int) -> std::unique_ptr<Sock> { return nullptr; };
     BOOST_CHECK(Proxy{ipv4}.Connect() == nullptr);
 #ifdef HAVE_SOCKADDR_UN
-    BOOST_CHECK(Proxy{path}.Connect() == nullptr);
+    BOOST_CHECK(Proxy{UnixSocketAddr{path}}.Connect() == nullptr);
 #endif
 }
 

@@ -144,35 +144,21 @@ private:
 class Proxy
 {
 public:
-    Proxy() : m_is_unix_socket(false), m_tor_stream_isolation(false) {}
-    explicit Proxy(const CService& _proxy, bool tor_stream_isolation = false) : proxy(_proxy), m_is_unix_socket(false), m_tor_stream_isolation(tor_stream_isolation) {}
-    explicit Proxy(std::string path, bool tor_stream_isolation = false)
-        : m_unix_socket_path(std::move(path)), m_is_unix_socket(true), m_tor_stream_isolation(tor_stream_isolation) {}
+    Proxy() : m_tor_stream_isolation(false) {}
+    explicit Proxy(const SocketAddr& proxy, bool tor_stream_isolation = false) : m_tor_stream_isolation(tor_stream_isolation), m_proxy(proxy) {}
+    explicit Proxy(const CService& addr, bool tor_stream_isolation = false) : m_tor_stream_isolation(tor_stream_isolation), m_proxy(SocketAddr(addr)) {}
+    explicit Proxy(const UnixSocketAddr& addr, bool tor_stream_isolation = false) : m_tor_stream_isolation(tor_stream_isolation), m_proxy(SocketAddr(addr)) {}
 
-    CService proxy;
-    std::string m_unix_socket_path;
-    bool m_is_unix_socket;
     bool m_tor_stream_isolation;
 
-    bool IsValid() const
-    {
-        if (m_is_unix_socket) return IsUnixSocketPath(m_unix_socket_path);
-        return proxy.IsValid();
-    }
+    bool IsValid() const { return m_proxy.IsValid(); }
+    sa_family_t GetSAFamily() const { return m_proxy.GetSAFamily(); }
+    std::string ToString() const { return m_proxy.ToStringAddrPort(); }
+    std::unique_ptr<Sock> Connect() const { return m_proxy.Connect(); }
+    CNetAddr GetCNetAddr() const { return m_proxy.GetCNetAddr(); }
 
-    sa_family_t GetFamily() const
-    {
-        if (m_is_unix_socket) return AF_UNIX;
-        return proxy.GetSAFamily();
-    }
-
-    std::string ToString() const
-    {
-        if (m_is_unix_socket) return m_unix_socket_path;
-        return proxy.ToStringAddrPort();
-    }
-
-    std::unique_ptr<Sock> Connect() const;
+private:
+    SocketAddr m_proxy{CService()};
 };
 
 /** Credentials for proxy authentication */
