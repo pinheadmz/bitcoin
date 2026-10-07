@@ -1,0 +1,488 @@
+name: OpenBSD
+
+# Runs on every push (this branch carries this file), no pull requests.
+# Replaces the default Linux/macOS/Windows CI on this fork branch with
+# OpenBSD CI from hebasto/bitcoin-core-nightly, extended with:
+#   - tcpdump loopback packet recording around the functional suite
+#   - always-on upload of ALL bitcoin node logs, test framework logs and
+#     packet captures, on success or failure
+#   - ccache for the bitcoin Core build, like bitcoin/bitcoin ci.yml
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+    # Manual re-runs allowed; source is fixed by job-level env below.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # See https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories.
+  CI_NCPU: 4
+
+jobs:
+  syslibs:
+    name: 'OpenBSD ${{ matrix.release }}, system libs'
+    runs-on: ubuntu-latest
+    # Generous budget: phase caps below (10800s + 5400s = 4h30 of tests)
+    # leave ~1h for deps, CDash submit and artifact uploads inside this
+    # 5h30 limit, so a kill never destroys the evidence uploads.
+    timeout-minutes: 330
+    env:
+      PACKAGES: 'boost sqlite3 capnproto zeromq qt6-qtbase qt6-qttools libqrencode'
+      REPOSITORY: 'pinheadmz/bitcoin'
+      REF: 'refs/heads/interface-http-openbsd'
+    defaults:
+      run:
+        shell: openbsd {0}
+    strategy: &RELEASE_MATRIX
+      fail-fast: false
+      matrix:
+        # Test all supported releases.
+        # From https://www.openbsd.org/faq/faq5.html:
+        # > Only the two most recent OpenBSD releases receive
+        # > security and reliability fixes for the base system.
+        release: ['7.8', '7.9']
+
+    steps:
+      - &RESTORE_CCACHE
+        name: Restore ccache directory
+        uses: actions/cache/restore@v5
+        id: ccache-cache
+        with:
+          # Lives inside the workspace, so the VM start step rsyncs it in and
+          # the final copyback rsyncs the populated dir out (the openbsd-vm
+          # action has no host<->VM mounts unlike openbsd macOS-vm variant).
+          path: ccache-dir
+          key: ccache-${{ github.job }}-openbsd-${{ matrix.release }}-${{ github.run_id }}
+          restore-keys: ccache-${{ github.job }}-openbsd-${{ matrix.release }}-
+
+      - &START_VM
+        name: Start OpenBSD ${{ matrix.release }} VM
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          prepare: |
+            pkg_add -U -v curl gtar-- ccache cmake-core ninja python%3 ${{ env.PACKAGES }}
+            # tcpdump needs write access to a /dev/bpf* device. This prepare
+            # step runs as root (pkg_add requires it), so grant BOTH ways:
+            #  1. Loosen the bpf devices so the run script's (non-root) user
+            #     can open them directly, with no privilege helper at all.
+            #  2. Passwordless doas for the capture tools (tcpdump, pkill,
+            #     chmod) plus a zero-exit probe command (id), for images
+            #     where the bpf devices are missing or get recreated.
+            # A previous attempt granted "$(id -un)" here -- which evaluated
+            # to ROOT, because prepare runs as root, so the non-root run
+            # user was never permitted. Do not repeat that.
+            chmod 666 /dev/bpf* 2>/dev/null || true
+            for u in runner root; do
+              for c in tcpdump pkill chmod id; do
+                echo "permit nopass ${u} cmd ${c}" >> /etc/doas.conf
+              done
+            done
+            chmod 0600 /etc/doas.conf
+            doas -C /etc/doas.conf 2>&1 || echo "WARNING: doas.conf syntax check failed (continuing)"
+            echo "=== prepare: doas.conf ==="
+            cat /etc/doas.conf
+            echo "=== prepare: bpf devices ==="
+            ls -l /dev/bpf* 2>/dev/null || echo "no bpf devices found!"
+          # rsync (instead of "no") copies the VM workspace back to the host
+          # after the last in-VM step, so the evidence files below can be
+          # uploaded as workflow artifacts.
+          sync: rsync
+          disable-cache: true
+
+      - &FETCH_SOURCE
+        name: Fetch source tarball
+        run: |
+          set -e
+          curl --location --fail --output source.tar.gz "https://github.com/${{ env.REPOSITORY }}/archive/${{ env.REF }}.tar.gz"
+          mkdir /home/bitcoin
+          gtar -xf source.tar.gz -C /home/bitcoin --strip-components=1
+          rm -rf source.tar.gz
+          # Test data.
+          DIR_UNIT_TEST_DATA=/home/qa-assets/unit_test_data
+          mkdir -p "$DIR_UNIT_TEST_DATA"
+          curl --location --fail --output "${DIR_UNIT_TEST_DATA}/script_assets_test.json" https://github.com/bitcoin-core/qa-assets/raw/main/unit_test_data/script_assets_test.json
+
+      - name: Generate CTest configuration
+        run: |
+          cat << 'EOF' > ctest_config.cmake
+          set(CTEST_SITE "${{ github.repository }}")
+          set(CTEST_BUILD_NAME "OpenBSD ${{ matrix.release }}, system libs")
+          set(CTEST_SOURCE_DIRECTORY "/home/bitcoin")
+          set(CTEST_BINARY_DIRECTORY "/home/build")
+          set(CTEST_CMAKE_GENERATOR "Ninja")
+          cmake_host_system_information(RESULT nproc QUERY NUMBER_OF_LOGICAL_CORES)
+          EOF
+
+      - &CDASH_START_UPDATE
+        name: CDash -- Start & Update
+        run: |
+          COMMIT="$(awk -F '"' '/^#define GIT_COMMIT_ID/ {print $2}' /home/bitcoin/src/clientversion.cpp)"
+          echo "set(CTEST_UPDATE_VERSION_OVERRIDE $COMMIT)" >> ctest_update_version_override.cmake
+          cat << 'EOF' > ctest_start_upate.cmake
+          include(ctest_config.cmake)
+          ctest_start(Experimental)
+          set(CTEST_UPDATE_TYPE git)
+          # This command may be redundant once the following MR is merged:
+          # https://gitlab.kitware.com/cmake/cmake/-/merge_requests/12038
+          set(CTEST_UPDATE_COMMAND "${CMAKE_COMMAND} -E true")
+          include(ctest_update_version_override.cmake)
+          ctest_update()
+          EOF
+          ctest --script ctest_start_upate.cmake
+          # A hack to work around the broken CTEST_UPDATE_VERSION_OVERRIDE.
+          sed -i 's/\([[:blank:]]*\)<UpdateType>Unknown<\/UpdateType>/\1<UpdateType>GIT<\/UpdateType>\
+            \1<Revision>'"$COMMIT"'<\/Revision>/' "/home/build/Testing/$(head -1 /home/build/Testing/TAG)/Update.xml"
+
+      - name: CDash -- Configure
+        run: |
+          cat << 'EOF' > ctest_configure.cmake
+          include(ctest_config.cmake)
+          set(configure_opts
+            "--preset dev-mode"
+            "-DWITH_USDT=OFF"
+            "-DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+          )
+          ctest_start(APPEND)
+          ctest_configure(OPTIONS "${configure_opts}")
+          EOF
+          ctest --extra-verbose --script ctest_configure.cmake
+
+      - &CDASH_BUILD
+        name: CDash -- Build
+        run: |
+          cat << 'EOF' > ctest_build.cmake
+          include(ctest_config.cmake)
+          ctest_start(APPEND)
+          ctest_build(PARALLEL_LEVEL ${nproc})
+          EOF
+          # ccache is wired up by CMake automatically when found on PATH
+          # (WITH_CCACHE defaults to ON and cmake/ccache.cmake appends the
+          # compiler launchers). The cache dir lives in the workspace so the
+          # VM-start rsync carries restored objects in and the copyback
+          # rsync carries populated objects out. Cap size so the four
+          # per-release caches stay well within the 10 GB repo cache limit
+          # shared with the depends caches.
+          CCACHE_DIR="$(pwd)/ccache-dir"
+          export CCACHE_DIR
+          ccache --max-size=2G > /dev/null
+          ccache --zero-stats
+          ctest --extra-verbose --script ctest_build.cmake
+          ccache --show-stats
+
+      - &CHECK_BITCOIND
+        name: Check 'bitcoind' executable
+        run: |
+          set -e
+          ls -l /home/build/bin/bitcoind
+          file /home/build/bin/bitcoind
+          ldd /home/build/bin/bitcoind
+          /home/build/bin/bitcoind -version
+
+      - &CDASH_TEST
+        name: CDash -- Test
+        run: |
+          cat << 'EOF' > ctest_test.cmake
+          include(ctest_config.cmake)
+          set(ENV{DIR_UNIT_TEST_DATA} /home/qa-assets/unit_test_data)
+          ctest_start(APPEND)
+          ctest_test(PARALLEL_LEVEL ${nproc})
+          EOF
+          ctest --script ctest_test.cmake
+
+      - &CDASH_SUBMIT
+        name: CDash -- Submit
+        if: always()
+        run: |
+          cat << 'EOF' > ctest_submit.cmake
+          include(ctest_config.cmake)
+          ctest_start(APPEND)
+          ctest_submit()
+          EOF
+          ctest --script ctest_submit.cmake
+
+      - &FUNCTIONAL_TESTS_DEPS
+        name: Install functional test dependencies
+        run: |
+          set -e
+          pkg_add -U -v py3-pip py3-zmq
+          # The system's `capnproto` package ships static libraries
+          # built without -fPIC, causing relocation errors when linking
+          # pycapnp's shared extension module.
+          #
+          # A two-part workaround is applied:
+          #  1. Force building the bundled libcapnp, which is compiled
+          #     with -fPIC.
+          #  2. Override LDCXXSHARED to drop the -L/usr/local/lib/ that
+          #     Python's sysconfig injects ahead of the bundled library
+          #     directories, and which would otherwise resolve -lcapnp*
+          #     and -lkj* to the system's static archives.
+          if pkg_info -e 'capnproto-*'; then
+            LDCXXSHARED="c++ -pthread -shared -fPIC" pip3 install --break-system-packages pycapnp -C force-bundled-libcapnp=True
+          else
+            pip3 install --break-system-packages pycapnp
+          fi
+          python3 --version
+          python3 -c "import sqlite3; print(f'SQLite {sqlite3.sqlite_version}')"
+          python3 -c "import capnp; print(f'pycapnp {capnp.__version__} / libcapnp {capnp.version.LIBCAPNP_VERSION_MAJOR}.{capnp.version.LIBCAPNP_VERSION_MINOR}.{capnp.version.LIBCAPNP_VERSION_MICRO}')"
+          python3 -c "import zmq; print(f'pyzmq {zmq.__version__} / libzmq {zmq.zmq_version()}')"
+
+      - &CHECK_HOST_DISK_SPACE
+        name: Check host disk space
+        shell: bash
+        run: df -h
+
+      - &RUN_FUNCTIONAL_TESTS
+        name: Run functional tests with loopback packet capture
+        run: |
+          ulimit -n 1024
+          # Unbuffered stdout prints "Remaining jobs: ..." in order, which
+          # helps to identify hung tests.
+          export PYTHONUNBUFFERED=1
+
+          # The functional suite spawns bitcoind nodes that talk over the
+          # loopback interface; record that traffic with tcpdump (OpenBSD base
+          # system utility). Runs work as root; doas used when needed.
+          SUDO_PREFIX=""
+          if [ "$(id -u)" != 0 ]; then
+            # Probe with a command that is actually in the doas permit list
+            # (a plain `doas -n true` fails on OpenBSD: the command has to be
+            # permitted explicitly). tcpdump -h exits 0 with only tcpdump
+            # itself permitted, which is exactly what we need it for.
+            if command -v doas >/dev/null 2>&1 && doas -n tcpdump -h >/dev/null 2>&1; then
+              SUDO_PREFIX="doas -n"
+            elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              SUDO_PREFIX="sudo -n"
+            elif [ -r /dev/bpf0 ]; then
+              echo "NOTE: no privilege prefix, but bpf devices are readable; trying without"
+            fi
+          fi
+          echo "=== capture privilege: SUDO_PREFIX='${SUDO_PREFIX}' uid=$(id -u) user=$(id -un) ==="
+
+          CAPTURE_FILE="$(pwd)/openbsd-loopback.pcap"
+          stop_capture() {
+            ${SUDO_PREFIX} pkill -x tcpdump 2>/dev/null || true
+            wait "${CAPTURE_SHELL_PID}" 2>/dev/null || true
+            sleep 1
+            ${SUDO_PREFIX} chmod 644 openbsd-loopback.pcap* 2>/dev/null || true
+          }
+          start_capture() {
+            # NOTE: OpenBSD base tcpdump supports NEITHER `-s 0` (snaplen is
+            # strtonum()-validated to 1..INT_MAX; "invalid snaplen 0: too
+            # small") NOR the ring-rotation flags `-C`/`-W`/`-U` -- those
+            # are libpcap-tcpdump features; any of them makes OpenBSD's
+            # tcpdump print usage and exit 1 before writing a byte (runs
+            # 1..4). Keep the command strictly inside OpenBSD's getopt list:
+            # "AaB:c:D:deE:fF:i:IlLnNOopqr:s:StT:vw:xXy:". No -C/-W = no
+            # ring rotation: at the measured ~32MB/10min, a full 3h timeout
+            # window writes ~600MB, well inside the VM's free disk.
+            rm -f openbsd-loopback.pcap*
+            ${SUDO_PREFIX} tcpdump -i lo0 -n -s 262144 -w "${CAPTURE_FILE}" tcp 2>&1 &
+            CAPTURE_SHELL_PID=$!
+            sleep 2
+            ls -lh "${CAPTURE_FILE}" 2>/dev/null || true
+            # Any stderr (e.g. "error opening /dev/bpf0: Permission denied")
+            # now lands in the visible log right above any warning.
+            if ! ls "${CAPTURE_FILE}"* >/dev/null 2>&1; then
+              echo "WARNING: tcpdump did not start writing ${CAPTURE_FILE}; packet capture disabled"
+              echo "=== capture self-test: open a bpf device directly ==="
+              ( ${SUDO_PREFIX} tcpdump -D 2>&1; echo "tcpdump -D rc=$?" ) || true
+            fi
+          }
+          collect_evidence() {
+            echo "=== collecting all node and test framework logs ==="
+            if ls -d /home/test_runner_* >/dev/null 2>&1; then
+              # Each functional test tmpdir contains every bitcoin node's
+              # debug.log plus the test framework's own test.log/combined log.
+              tar czf "$(pwd)/openbsd-test-logs.tar.gz" /home/test_runner_* 2>/dev/null || true
+              ls -l openbsd-test-logs.tar.gz || true
+            fi
+            if ls -d /home/build/Testing >/dev/null 2>&1; then
+              # Unit test (CTest) logs.
+              tar czf "$(pwd)/openbsd-ctest-logs.tar.gz" /home/build/Testing 2>/dev/null || true
+              ls -l openbsd-ctest-logs.tar.gz || true
+            fi
+            ls -lh openbsd-*.tar.gz openbsd-loopback.pcap* 2>/dev/null || true
+          }
+
+          start_capture
+
+          # Reproduction runner: while the intermittent interface_http.py
+          # hang on this guest is being debugged, only interface_http.py
+          # runs, restarted in a loop until it fails. Each iteration uses a
+          # fresh tmpdir; the loopback capture and evidence collection
+          # below cover all of them. The loop is bounded at ~3h so a run
+          # that never reproduces still ends and uploads artifacts.
+          http_rc=0
+          iter=0
+          loop_start=$(date +%s)
+          while :; do
+            iter=$((iter + 1))
+            iter_log="interface_http_i${iter}.log"
+            elapsed=$(( $(date +%s) - loop_start ))
+            if [ "${elapsed}" -gt 10800 ]; then
+              echo "=== interface_http loop: ${iter} iterations, no failure after ${elapsed}s; stopping ==="
+              break
+            fi
+            echo "=== interface_http iteration ${iter} ==="
+            timeout 900 /home/build/test/functional/test_runner.py interface_http --combinedlogslen=99999999 \
+              --tmpdirprefix /home \
+              --timeout-factor=8 > "${iter_log}" 2>&1 || http_rc=$?
+            if [ "${http_rc}" -eq 0 ]; then
+              tail -3 "${iter_log}"
+            else
+              echo "=== interface_http FAILED on iteration ${iter}, rc=${http_rc} — stopping loop ==="
+              tail -120 "${iter_log}" || true
+              break
+            fi
+          done
+
+          stop_capture
+          collect_evidence
+          exit "${http_rc}"
+
+      - &FINALIZE_EVIDENCE
+        name: Finalize evidence in VM
+        if: always()
+        run: |
+          # Runs even after failures so that artifacts always exist: stop the
+          # packet capture, make the pcaps readable, and build the log
+          # archives -- this is the fallback path when the test step was
+          # interrupted before it could collect anything.
+          SUDO_PREFIX=""
+          if [ "$(id -u)" != 0 ]; then
+            # Same rationale as in the test step: probe with a command that
+            # is actually in the doas permit list, not `true`.
+            if command -v doas >/dev/null 2>&1 && doas -n tcpdump -h >/dev/null 2>&1; then
+              SUDO_PREFIX="doas -n"
+            elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              SUDO_PREFIX="sudo -n"
+            elif [ -r /dev/bpf0 ]; then
+              echo "NOTE: no privilege prefix, but bpf devices are readable; trying without"
+            fi
+          fi
+          sleep 2
+          ${SUDO_PREFIX} chmod 644 openbsd-loopback.pcap* 2>/dev/null || true
+          if [ ! -f openbsd-test-logs.tar.gz ] && ls -d /home/test_runner_* >/dev/null 2>&1; then
+            tar czf openbsd-test-logs.tar.gz /home/test_runner_* 2>/dev/null || true
+          fi
+          if [ ! -f openbsd-ctest-logs.tar.gz ] && ls -d /home/build/Testing >/dev/null 2>&1; then
+            tar czf openbsd-ctest-logs.tar.gz /home/build/Testing 2>/dev/null || true
+          fi
+          echo "=== evidence inventory in $(pwd) ==="
+          ls -lh openbsd-*.tar.gz openbsd-loopback.pcap* interface_http_i*.log 2>/dev/null || true
+
+      - &UPLOAD_PCAP
+        name: Upload packet captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.job }}-${{ matrix.release }}-pcap-${{ github.run_id }}
+          path: openbsd-loopback.pcap*
+          if-no-files-found: ignore
+
+      - &UPLOAD_LOGS
+        name: Upload node and test framework logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.job }}-${{ matrix.release }}-logs-${{ github.run_id }}
+          path: |
+            openbsd-test-logs.tar.gz
+            openbsd-ctest-logs.tar.gz
+          if-no-files-found: ignore
+
+      - &UPLOAD_CONSOLE
+        name: Upload suite console logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.job }}-${{ matrix.release }}-console-${{ github.run_id }}
+          path: |
+            interface_http_i*.log
+          if-no-files-found: ignore
+
+      - &SAVE_CCACHE
+        name: Save ccache directory
+        if: always() && steps.ccache-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          # Unlike bitcoin/bitcoin ci.yml (which saves only on the
+          # default branch), every run saves its own entry; later runs
+          # restore the freshest one via the restore step's restore-keys.
+          key: ccache-${{ github.job }}-openbsd-${{ matrix.release }}-${{ github.run_id }}
+          path: ccache-dir
+
+  depends:
+    name: 'OpenBSD ${{ matrix.release }}, depends'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      PACKAGES: 'bash gmake bison ccache'
+      REPOSITORY: 'pinheadmz/bitcoin'
+      REF: 'refs/heads/interface-http-openbsd'
+    defaults:
+      run:
+        shell: openbsd {0}
+    strategy: *RELEASE_MATRIX
+
+    steps:
+      - *RESTORE_CCACHE
+
+      - *START_VM
+
+      - *FETCH_SOURCE
+
+      - name: Build depends
+        uses: hebasto/bitcoin-core-nightly/.github/actions/build-depends@main
+        with:
+          vm: openbsd
+          source-dir: /home/bitcoin
+          cache-tag: openbsd-${{ matrix.release }}
+
+      - name: Generate CTest configuration
+        run: |
+          cat << 'EOF' > ctest_config.cmake
+          set(CTEST_SITE "${{ github.repository }}")
+          set(CTEST_BUILD_NAME "OpenBSD ${{ matrix.release }}, depends")
+          set(CTEST_SOURCE_DIRECTORY "/home/bitcoin")
+          set(CTEST_BINARY_DIRECTORY "/home/build")
+          set(CTEST_CMAKE_GENERATOR "Ninja")
+          cmake_host_system_information(RESULT nproc QUERY NUMBER_OF_LOGICAL_CORES)
+          EOF
+
+      - *CDASH_START_UPDATE
+
+      - name: CDash -- Configure
+        run: |
+          cat << 'EOF' > ctest_configure.cmake
+          include(ctest_config.cmake)
+          set(configure_opts
+            "--toolchain /home/bitcoin/depends/x86_64-unknown-openbsd${{ matrix.release }}/toolchain.cmake"
+            "--preset dev-mode"
+            "-DWITH_USDT=OFF"
+            "-DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+          )
+          ctest_start(APPEND)
+          ctest_configure(OPTIONS "${configure_opts}")
+          EOF
+          ctest --extra-verbose --script ctest_configure.cmake
+
+      - *CDASH_BUILD
+      - *CHECK_BITCOIND
+      - *CDASH_TEST
+      - *CDASH_SUBMIT
+      - *FUNCTIONAL_TESTS_DEPS
+      - *CHECK_HOST_DISK_SPACE
+      - *RUN_FUNCTIONAL_TESTS
+      - *FINALIZE_EVIDENCE
+      - *UPLOAD_PCAP
+      - *UPLOAD_LOGS
+      - *UPLOAD_CONSOLE
+
+      - *SAVE_CCACHE
