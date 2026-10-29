@@ -160,6 +160,8 @@ class HTTPBasicsTest (BitcoinTestFramework):
         self.check_request_smuggling_cl_te()
         self.check_duplicate_content_length()
         self.check_null_byte_in_uri()
+        self.check_urgent_data()
+        self.check_urgent_pointer_ahead()
         self.check_invalid_http_version()
         self.check_whitespace_in_headers()
         self.check_connection_limit()
@@ -605,6 +607,49 @@ class HTTPBasicsTest (BitcoinTestFramework):
         conn.send_raw(raw)
         response = conn.recv_raw().decode()
         assert response.startswith("HTTP/1.1 400")
+
+
+    def check_urgent_data(self):
+        self.log.info("Check that a request sent as TCP urgent data is received inline")
+        conn = BitcoinHTTPConnection(self.node)
+        raw = (
+            "GET / HTTP/1.1\r\n"
+            f"Host: {conn.url.hostname}\r\n"
+            f"Authorization: Basic {str_to_b64str(conn.authpair)}\r\n"
+            "\r\n"
+        ).encode("ascii")
+        # TCP only has an urgent pointer to a single byte, so send the request one
+        # byte at a time with MSG_OOB to mark every byte urgent. Disable Nagle so
+        # that the bytes are not coalesced into fewer segments.
+        conn.conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        for i in range(len(raw)):
+            assert_equal(conn.conn.sock.send(raw[i:i + 1], socket.MSG_OOB), 1)
+        # If the server did not receive urgent data inline it would never see the
+        # complete request. RPC endpoint '/' only handles POST.
+        response = conn.recv_raw().decode()
+        assert response.startswith(f"HTTP/1.1 {http.client.METHOD_NOT_ALLOWED}")
+
+
+    def check_urgent_pointer_ahead(self):
+        self.log.info("Check that a request is handled when the TCP urgent pointer references unsent data")
+        conn = BitcoinHTTPConnection(self.node)
+        # Pad the JSON body with whitespace so the request spans several TCP
+        # segments, even on loopback where the MSS can be close to 64KiB.
+        body = '{"method": "getblockcount"' + " " * (256 * 1024) + "}"
+        raw = (
+            "POST / HTTP/1.1\r\n"
+            f"Host: {conn.url.hostname}\r\n"
+            f"Authorization: Basic {str_to_b64str(conn.authpair)}\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "\r\n"
+            f"{body}"
+        ).encode("ascii")
+        # Sent in a single call with MSG_OOB, only the last byte is urgent. Every
+        # segment before the last one carries an urgent pointer to a byte that has
+        # not been sent yet (or 0xFFFF if the offset does not fit in 16 bits).
+        conn.conn.sock.sendall(raw, socket.MSG_OOB)
+        response = conn.recv_raw().decode()
+        assert response.startswith(f"HTTP/1.1 {http.client.OK}")
 
 
     def check_invalid_http_version(self):
