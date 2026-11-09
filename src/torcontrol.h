@@ -65,9 +65,11 @@ public:
     /**
      * Connect to a Tor control port.
      * tor_control_center is address of the form host:port.
+     * If tor_control_configured is true, the first connection failure is
+     * logged as a warning, otherwise all failures are logged at debug level.
      * Return true on success.
      */
-    bool Connect(const std::string& tor_control_center);
+    bool Connect(const std::string& tor_control_center, bool tor_control_configured);
 
     /**
      * Disconnect from Tor control port.
@@ -122,7 +124,7 @@ private:
 class TorController
 {
 public:
-    TorController(const std::string& tor_control_center, const CService& target);
+    TorController(const std::string& tor_control_center, const CService& target, bool tor_control_configured);
     TorController() : m_conn(m_interrupt) {
         // Used for testing only.
     }
@@ -140,6 +142,8 @@ private:
     CThreadInterrupt m_interrupt;
     std::thread m_thread;
     const std::string m_tor_control_center;
+    /** Whether Tor control was explicitly configured by the user */
+    const bool m_tor_control_configured{false};
     TorControlConnection m_conn;
     std::string m_private_key;
     std::atomic<bool> m_reconnect;

@@ -294,6 +294,17 @@ class TorControlTest(BitcoinTestFramework):
 
         mock_tor.stop()
 
+    def test_connect_failure_warning(self):
+        self.log.info("Test that failing to connect to an explicitly configured Tor control port warns only once")
+        addr = f"127.0.0.1:{self.next_port()}"
+        with self.nodes[0].assert_debug_log([f"[warning] tor: Error connecting to address {addr}"], timeout=10):
+            self.restart_node(0, extra_args=[f"-torcontrol={addr}", "-listenonion=1", "-debug=tor"])
+
+        self.log.info("Test that subsequent connection failures are logged at debug level")
+        with self.nodes[0].assert_debug_log([f"[tor] tor: Error connecting to address {addr}"],
+                                            unexpected_msgs=["[warning] tor: Error connecting to address"], timeout=10):
+            pass
+
     def test_lost_service(self):
         self.log.info("Test that losing an active onion service is logged")
         mock_tor = MockTorControlServer(self.next_port())
@@ -382,6 +393,7 @@ class TorControlTest(BitcoinTestFramework):
         self.test_invalid_service_id()
         self.test_private_key_tor_command_injection()
         self.test_reconnect_backoff()
+        self.test_connect_failure_warning()
         self.test_lost_service()
 
 
