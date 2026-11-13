@@ -1,0 +1,309 @@
+name: FreeBSD nightly (http-unix-sockets)
+on:
+  push:
+    branches: [http-unix-sockets-nightly]
+    paths:
+      - '.github/workflows/freebsd.yml'
+      - 'test/functional/**'
+  pull_request:
+    paths:
+      - '.github/workflows/freebsd.yml'
+      - 'test/functional/**'
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Repository name with owner'
+        required: true
+        default: pinheadmz/bitcoin
+        type: string
+      ref:
+        description: 'Repository reference: refs/heads/<branch>, refs/tags/<tag>, refs/pull/<PR>/head or <commit>'
+        required: true
+        default: refs/heads/http-unix-sockets-nightly
+        type: string
+      skip_functional_tests:
+        description: 'Skip functional tests'
+        required: true
+        default: false
+        type: boolean
+concurrency:
+  group: ${{ github.workflow }}${{ github.event_name != 'pull_request' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # See https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories.
+  CI_NCPU: 4
+
+jobs:
+  freebsd-syslibs:
+    name: 'FreeBSD ${{ matrix.release }}, ${{ matrix.filesystem }}, system libs'
+    runs-on: ubuntu-latest
+    env:
+      PACKAGES: 'boost-libs sqlite3 capnproto libzmq4 qt6-base qt6-tools libqrencode'
+    defaults:
+      run:
+        shell: freebsd {0}
+    strategy: &RELEASE_MATRIX
+      fail-fast: false
+      matrix:
+        # Test all supported releases.
+        # See https://www.freebsd.org/releases/.
+        #
+        # `image` is the vmactions/freebsd-vm release name. Since v1.6.0 of
+        # the action, every plain release image uses UFS, and a ZFS variant
+        # is available as '<release>-zfs' for the 15.x releases.
+        # See https://github.com/vmactions/freebsd-vm/releases/tag/v1.6.0.
+        include:
+          - release: '14.5'
+            filesystem: 'UFS'
+            image: '14.5'
+          - release: '15.1'
+            filesystem: 'UFS'
+            image: '15.1'
+          - release: '15.1'
+            filesystem: 'ZFS'
+            image: '15.1-zfs'
+            # posix_fallocate() is disabled on ZFS, and the fallback
+            # implementation of AllocateFileRange() is broken.
+            # See https://github.com/bitcoin/bitcoin/issues/33128.
+            functional_test_exclude_args: '--exclude feature_reindex_init'
+
+    steps:
+      - &ANNOTATE_WORKFLOW_INPUTS
+        name: Annotate with workflow inputs
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          INPUTS_REPOSITORY: ${{ inputs.repository }}
+          INPUTS_REF: ${{ inputs.ref }}
+        shell: bash
+        run: echo "::notice title=inputs::$INPUTS_REPOSITORY $INPUTS_REF"
+
+      - &START_VM
+        name: Start FreeBSD ${{ matrix.release }} (${{ matrix.filesystem }}) VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.image }}
+          prepare: |
+            pkg update
+            pkg install -y curl cmake-core ninja pkgconf python3 ${{ env.PACKAGES }}
+          sync: no
+          disable-cache: true
+
+      - &FETCH_SOURCE
+        name: Fetch source tarball
+        run: |
+          set -e
+          curl --location --fail --retry 5 --retry-delay 30 --retry-all-errors --output source.tar.gz https://github.com/${{ inputs.repository || 'pinheadmz/bitcoin' }}/archive/${{ inputs.ref || 'refs/heads/http-unix-sockets-nightly' }}.tar.gz
+          mkdir bitcoin
+          tar -xf source.tar.gz -C bitcoin --strip-components=1
+          # Test data.
+          DIR_UNIT_TEST_DATA="$(pwd)/qa-assets/unit_test_data"
+          mkdir -p "$DIR_UNIT_TEST_DATA"
+          curl --location --fail --retry 5 --retry-delay 30 --retry-all-errors --output "${DIR_UNIT_TEST_DATA}/script_assets_test.json" https://github.com/bitcoin-core/qa-assets/raw/main/unit_test_data/script_assets_test.json
+
+      - name: Generate CTest configuration
+        run: |
+          cat << 'EOF' > ctest_config.cmake
+          set(CTEST_SITE "${{ github.repository }}")
+          set(CTEST_BUILD_NAME "FreeBSD ${{ matrix.release }}, ${{ matrix.filesystem }}, system libs")
+          set(CTEST_SOURCE_DIRECTORY "${CTEST_SCRIPT_DIRECTORY}/bitcoin")
+          set(CTEST_BINARY_DIRECTORY "${CTEST_SCRIPT_DIRECTORY}/build")
+          set(CTEST_CMAKE_GENERATOR "Ninja")
+          cmake_host_system_information(RESULT nproc QUERY NUMBER_OF_LOGICAL_CORES)
+          EOF
+
+      - &CDASH_START_UPDATE
+        name: CDash -- Start & Update
+        run: |
+          COMMIT="$(awk -F '"' '/^#define GIT_COMMIT_ID/ {print $2}' bitcoin/src/clientversion.cpp)"
+          echo "set(CTEST_UPDATE_VERSION_OVERRIDE $COMMIT)" >> ctest_update_version_override.cmake
+          cat << 'EOF' > ctest_start_update.cmake
+          include(ctest_config.cmake)
+          ctest_start(${{ case(github.event_name == 'workflow_run', 'Nightly', format('Experimental GROUP {0}', github.event_name)) }})
+          # CTest infers the VCS type from the update command's name. With
+          # CTEST_UPDATE_VERSION_OVERRIDE set no update runs, but CTest still
+          # invokes the command to list local modifications and reports any as
+          # an update error. The command deliberately does not exist, so that
+          # check is skipped on every runner, whether or not git is installed
+          # and whether or not the tree has been patched.
+          set(CTEST_UPDATE_COMMAND not-run/git)
+          include(ctest_update_version_override.cmake)
+          ctest_update()
+          EOF
+          ctest --script ctest_start_update.cmake
+
+      - name: CDash -- Configure
+        run: |
+          cat << 'EOF' > ctest_configure.cmake
+          include(ctest_config.cmake)
+          set(configure_opts
+            "--preset dev-mode"
+            "-DWITH_USDT=OFF"
+            "-DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+          )
+          ctest_start(APPEND)
+          ctest_configure(OPTIONS "${configure_opts}")
+          EOF
+          ctest --extra-verbose --script ctest_configure.cmake
+
+      - &CDASH_BUILD
+        name: CDash -- Build
+        run: |
+          cat << 'EOF' > ctest_build.cmake
+          include(ctest_config.cmake)
+          ctest_start(APPEND)
+          ctest_build(PARALLEL_LEVEL ${nproc})
+          EOF
+          ctest --extra-verbose --script ctest_build.cmake
+
+      - &CHECK_BITCOIND
+        name: Check 'bitcoind' executable
+        run: |
+          set -e
+          ls -l build/bin/bitcoind
+          file build/bin/bitcoind
+          ldd build/bin/bitcoind
+          build/bin/bitcoind -version
+
+      - &CDASH_TEST
+        name: CDash -- Test
+        run: |
+          cat << 'EOF' > ctest_test.cmake
+          include(ctest_config.cmake)
+          set(ENV{DIR_UNIT_TEST_DATA} ${CTEST_SCRIPT_DIRECTORY}/qa-assets/unit_test_data)
+          ctest_start(APPEND)
+          ctest_test(
+            PARALLEL_LEVEL ${nproc}
+            RETURN_VALUE test_result
+          )
+          # ctest_test() does not fail the script when tests fail.
+          # The only signal is RETURN_VALUE (0 == all tests passed).
+          if(NOT test_result EQUAL 0)
+            message(FATAL_ERROR "Tests failed: RETURN_VALUE=${test_result}")
+          endif()
+          EOF
+          ctest --script ctest_test.cmake
+
+      - &CDASH_SUBMIT
+        name: CDash -- Submit
+        if: always()
+        run: |
+          cat << 'EOF' > ctest_submit.cmake
+          include(ctest_config.cmake)
+          ctest_start(APPEND)
+          ctest_submit()
+          EOF
+          ctest --script ctest_submit.cmake
+
+      - &FUNCTIONAL_TESTS_DEPS
+        name: Install functional test dependencies
+        if: ${{ ! inputs.skip_functional_tests }}
+        run: |
+          set -e
+          pkg install -y devel/py-pip databases/py-sqlite3 net/py-pyzmq sysutils/lsof
+          pip install pycapnp
+          python3 --version
+          python3 -c "import sqlite3; print(f'SQLite {sqlite3.sqlite_version}')"
+          python3 -c "import capnp; print(f'pycapnp {capnp.__version__} / libcapnp {capnp.version.LIBCAPNP_VERSION_MAJOR}.{capnp.version.LIBCAPNP_VERSION_MINOR}.{capnp.version.LIBCAPNP_VERSION_MICRO}')"
+          python3 -c "import zmq; print(f'pyzmq {zmq.__version__} / libzmq {zmq.zmq_version()}')"
+
+      - &CHECK_HOST_DISK_SPACE
+        name: Check host disk space
+        if: ${{ ! inputs.skip_functional_tests }}
+        shell: bash
+        run: df -h
+
+      - &CHECK_VM_DISK_SPACE
+        name: Check VM disk space
+        if: ${{ ! inputs.skip_functional_tests }}
+        # The test datadirs go under the default temporary directory, and so
+        # does the initial chain cache.
+        run: df -h /tmp
+
+      - &RUN_FUNCTIONAL_TESTS
+        name: Run functional tests
+        if: ${{ ! inputs.skip_functional_tests }}
+        run: |
+          set -e
+          # Unbuffered stdout prints "Remaining jobs: ..." in order, which
+          # helps to identify hung tests.
+          export PYTHONUNBUFFERED=1
+          build/test/functional/test_runner.py -j $((${{ env.CI_NCPU }} * 2)) --combinedlogslen=99999999 \
+            --extended \
+            ${{ matrix.functional_test_exclude_args }} \
+            `# Tests using lsof may fail due to the following warning:` \
+            `# lsof: WARNING -- reading lockf list failed: Cannot allocate memory` \
+            `# Run them separately in the subsequent command.` \
+            --exclude feature_bind_extra \
+            --exclude rpc_bind \
+            --timeout-factor=8
+          build/test/functional/test_runner.py feature_bind_extra rpc_bind -j 1 --combinedlogslen=99999999 \
+            --timeout-factor=8
+
+      - &SHOW_KERNEL_MESSAGES
+        name: Show kernel messages
+        # When bitcoind dies from a signal, its own logs do not say which
+        # one. The kernel logs "exited on signal N" for a crash and
+        # "was killed" for an out-of-memory kill.
+        if: ${{ failure() && ! inputs.skip_functional_tests }}
+        run: dmesg
+
+  freebsd-depends:
+    name: 'FreeBSD ${{ matrix.release }}, ${{ matrix.filesystem }}, depends'
+    runs-on: ubuntu-latest
+    env:
+      PACKAGES: 'bash gmake bison'
+    defaults:
+      run:
+        shell: freebsd {0}
+    strategy: *RELEASE_MATRIX
+
+    steps:
+      - *ANNOTATE_WORKFLOW_INPUTS
+      - *START_VM
+      - *FETCH_SOURCE
+
+      - name: Build depends
+        uses: hebasto/bitcoin-core-nightly/.github/actions/build-depends@main
+        with:
+          vm: freebsd
+          source-dir: /root/bitcoin
+          cache-tag: freebsd-${{ matrix.release }}
+
+      - name: Generate CTest configuration
+        run: |
+          cat << 'EOF' > ctest_config.cmake
+          set(CTEST_SITE "${{ github.repository }}")
+          set(CTEST_BUILD_NAME "FreeBSD ${{ matrix.release }}, ${{ matrix.filesystem }}, depends")
+          set(CTEST_SOURCE_DIRECTORY "${CTEST_SCRIPT_DIRECTORY}/bitcoin")
+          set(CTEST_BINARY_DIRECTORY "${CTEST_SCRIPT_DIRECTORY}/build")
+          set(CTEST_CMAKE_GENERATOR "Ninja")
+          cmake_host_system_information(RESULT nproc QUERY NUMBER_OF_LOGICAL_CORES)
+          EOF
+
+      - *CDASH_START_UPDATE
+
+      - name: CDash -- Configure
+        run: |
+          cat << 'EOF' > ctest_configure.cmake
+          include(ctest_config.cmake)
+          set(configure_opts
+            "--toolchain /root/bitcoin/depends/x86_64-unknown-freebsd${{ matrix.release }}/toolchain.cmake"
+            "--preset dev-mode"
+            "-DWITH_USDT=OFF"
+            "-DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+          )
+          ctest_start(APPEND)
+          ctest_configure(OPTIONS "${configure_opts}")
+          EOF
+          ctest --extra-verbose --script ctest_configure.cmake
+
+      - *CDASH_BUILD
+      - *CHECK_BITCOIND
+      - *CDASH_TEST
+      - *CDASH_SUBMIT
+      - *FUNCTIONAL_TESTS_DEPS
+      - *CHECK_HOST_DISK_SPACE
+      - *CHECK_VM_DISK_SPACE
+      - *RUN_FUNCTIONAL_TESTS
+      - *SHOW_KERNEL_MESSAGES

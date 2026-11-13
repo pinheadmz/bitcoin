@@ -1,0 +1,355 @@
+name: OpenBSD nightly (http-unix-sockets)
+on:
+  push:
+    branches: [http-unix-sockets-nightly]
+    paths:
+      - '.github/workflows/openbsd.yml'
+      - 'test/functional/**'
+  pull_request:
+    paths:
+      - '.github/workflows/openbsd.yml'
+      - 'test/functional/**'
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Repository name with owner'
+        required: true
+        default: pinheadmz/bitcoin
+        type: string
+      ref:
+        description: 'Repository reference: refs/heads/<branch>, refs/tags/<tag>, refs/pull/<PR>/head or <commit>'
+        required: true
+        default: refs/heads/http-unix-sockets-nightly
+        type: string
+      skip_functional_tests:
+        description: 'Skip functional tests'
+        required: true
+        default: false
+        type: boolean
+concurrency:
+  group: ${{ github.workflow }}${{ github.event_name != 'pull_request' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # See https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories.
+  CI_NCPU: 4
+
+jobs:
+  openbsd-syslibs:
+    name: 'OpenBSD ${{ matrix.release }}, system libs'
+    runs-on: ubuntu-latest
+    env:
+      PACKAGES: 'boost sqlite3 capnproto zeromq qt6-qtbase qt6-qttools libqrencode'
+    defaults:
+      run:
+        shell: openbsd {0}
+    strategy: &RELEASE_MATRIX
+      fail-fast: false
+      matrix:
+        # Test all supported releases.
+        # From https://www.openbsd.org/faq/faq5.html:
+        # > Only the two most recent OpenBSD releases receive
+        # > security and reliability fixes for the base system.
+        release: ['7.9', '8.0']
+
+    steps:
+      - &ANNOTATE_WORKFLOW_INPUTS
+        name: Annotate with workflow inputs
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          INPUTS_REPOSITORY: ${{ inputs.repository }}
+          INPUTS_REF: ${{ inputs.ref }}
+        shell: bash
+        run: echo "::notice title=inputs::$INPUTS_REPOSITORY $INPUTS_REF"
+
+      - &START_VM
+        name: Start OpenBSD ${{ matrix.release }} VM
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          prepare: pkg_add -U -v curl gtar-- cmake-core ninja python%3 ${{ env.PACKAGES }}
+          sync: no
+          disable-cache: true
+
+      - &FETCH_SOURCE
+        name: Fetch source tarball
+        run: |
+          set -e
+          curl --location --fail --retry 5 --retry-delay 30 --retry-all-errors --output source.tar.gz https://github.com/${{ inputs.repository || 'pinheadmz/bitcoin' }}/archive/${{ inputs.ref || 'refs/heads/http-unix-sockets-nightly' }}.tar.gz
+          mkdir /home/bitcoin
+          gtar -xf source.tar.gz -C /home/bitcoin --strip-components=1
+          rm -rf source.tar.gz
+          # Test data.
+          DIR_UNIT_TEST_DATA=/home/qa-assets/unit_test_data
+          mkdir -p "$DIR_UNIT_TEST_DATA"
+          curl --location --fail --retry 5 --retry-delay 30 --retry-all-errors --output "${DIR_UNIT_TEST_DATA}/script_assets_test.json" https://github.com/bitcoin-core/qa-assets/raw/main/unit_test_data/script_assets_test.json
+
+      - &PATCH_SOURCE
+        # `p2p_private_broadcast_retry_v1.py` fails intermittently on OpenBSD:
+        # one of the `addnode onetry` connections through the Python SOCKS5
+        # proxy never completes its handshake and, with the framework's
+        # `peertimeout=999999999`, bitcoind never drops it nor retries that
+        # address, so the test waits until its own timeout.
+        # See https://github.com/bitcoin/bitcoin/issues/36099.
+        # TODO: Drop this step once the fix is merged upstream.
+        name: Patch functional tests
+        run: |
+          set -e
+          cat << 'EOF' > private-broadcast-peertimeout.patch
+          --- a/test/functional/p2p_private_broadcast_retry_v1.py
+          +++ b/test/functional/p2p_private_broadcast_retry_v1.py
+          @@ -144,4 +144,5 @@ class P2PPrivateBroadcastRetryV1(BitcoinTestFramework):
+                           "-test=addrman",
+                           "-v2transport=0",
+          +                f"-peertimeout={int(10 * self.options.timeout_factor)}",
+                       ],
+                   ]
+          EOF
+          patch -d /home/bitcoin -p1 -N < private-broadcast-peertimeout.patch
+
+      - name: Generate CTest configuration
+        run: |
+          cat << 'EOF' > ctest_config.cmake
+          set(CTEST_SITE "${{ github.repository }}")
+          set(CTEST_BUILD_NAME "OpenBSD ${{ matrix.release }}, system libs")
+          set(CTEST_SOURCE_DIRECTORY "/home/bitcoin")
+          set(CTEST_BINARY_DIRECTORY "/home/build")
+          set(CTEST_CMAKE_GENERATOR "Ninja")
+          cmake_host_system_information(RESULT nproc QUERY NUMBER_OF_LOGICAL_CORES)
+          EOF
+
+      - &CDASH_START_UPDATE
+        name: CDash -- Start & Update
+        run: |
+          COMMIT="$(awk -F '"' '/^#define GIT_COMMIT_ID/ {print $2}' /home/bitcoin/src/clientversion.cpp)"
+          echo "set(CTEST_UPDATE_VERSION_OVERRIDE $COMMIT)" >> ctest_update_version_override.cmake
+          cat << 'EOF' > ctest_start_update.cmake
+          include(ctest_config.cmake)
+          ctest_start(${{ case(github.event_name == 'workflow_run', 'Nightly', format('Experimental GROUP {0}', github.event_name)) }})
+          # CTest infers the VCS type from the update command's name. With
+          # CTEST_UPDATE_VERSION_OVERRIDE set no update runs, but CTest still
+          # invokes the command to list local modifications and reports any as
+          # an update error. The command deliberately does not exist, so that
+          # check is skipped on every runner, whether or not git is installed
+          # and whether or not the tree has been patched.
+          set(CTEST_UPDATE_COMMAND not-run/git)
+          include(ctest_update_version_override.cmake)
+          ctest_update()
+          EOF
+          ctest --script ctest_start_update.cmake
+
+      - name: CDash -- Configure
+        run: |
+          cat << 'EOF' > ctest_configure.cmake
+          include(ctest_config.cmake)
+          set(configure_opts
+            "--preset dev-mode"
+            "-DWITH_USDT=OFF"
+            "-DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+          )
+          ctest_start(APPEND)
+          ctest_configure(OPTIONS "${configure_opts}")
+          EOF
+          ctest --extra-verbose --script ctest_configure.cmake
+
+      - &CDASH_BUILD
+        name: CDash -- Build
+        id: cdash-build
+        run: |
+          cat << 'EOF' > ctest_build.cmake
+          include(ctest_config.cmake)
+          ctest_start(APPEND)
+          ctest_build(PARALLEL_LEVEL ${nproc})
+          EOF
+          ctest --extra-verbose --script ctest_build.cmake
+
+      - &CHECK_BITCOIND
+        name: Check 'bitcoind' executable
+        run: |
+          set -e
+          ls -l /home/build/bin/bitcoind
+          file /home/build/bin/bitcoind
+          ldd /home/build/bin/bitcoind
+          /home/build/bin/bitcoind -version
+
+      - &CDASH_TEST
+        name: CDash -- Test
+        run: |
+          cat << 'EOF' > ctest_test.cmake
+          include(ctest_config.cmake)
+          set(ENV{DIR_UNIT_TEST_DATA} /home/qa-assets/unit_test_data)
+          ctest_start(APPEND)
+          ctest_test(
+            PARALLEL_LEVEL ${nproc}
+            RETURN_VALUE test_result
+          )
+          # ctest_test() does not fail the script when tests fail.
+          # The only signal is RETURN_VALUE (0 == all tests passed).
+          if(NOT test_result EQUAL 0)
+            message(FATAL_ERROR "Tests failed: RETURN_VALUE=${test_result}")
+          endif()
+          EOF
+          ctest --script ctest_test.cmake
+
+      - &CDASH_SUBMIT
+        name: CDash -- Submit
+        if: always()
+        run: |
+          cat << 'EOF' > ctest_submit.cmake
+          include(ctest_config.cmake)
+          ctest_start(APPEND)
+          ctest_submit()
+          EOF
+          ctest --script ctest_submit.cmake
+
+      - &DEBUG_GUI_TESTS_MALLOC_S
+        # The 2026-11-05 "OpenBSD 8.0, depends" job aborted in
+        # `test_bitcoin-qt` during process teardown, after every suite had
+        # passed, with:
+        #   in free(): write to free mem 0xb5935add000[2568..2575]@4096
+        # OpenBSD's default junk level only samples four words per freed
+        # page and checks them when the page is later evicted from the
+        # free-page cache, so the writer is unknown and the report is rare.
+        # `MALLOC_OPTIONS=S` junks and validates everything and keeps no
+        # free-page cache, so a stale write faults at the writing
+        # instruction. Repeat the test until it fails and print the
+        # backtrace of every thread from the core.
+        # TODO: Drop this step once the writer is found.
+        name: Debug GUI tests with MALLOC_OPTIONS=S
+        if: ${{ !cancelled() && steps.cdash-build.outcome == 'success' }}
+        timeout-minutes: 30
+        run: |
+          set -e
+          ulimit -c unlimited
+          # CTest runs the test from its build directory, so the core lands there.
+          core_dir=/home/build/src/qt/test
+          rm -f "$core_dir"/*.core
+          status=0
+          MALLOC_OPTIONS=S ctest --test-dir /home/build \
+            --tests-regex '^test_bitcoin-qt$' \
+            --repeat until-fail:50 \
+            --output-on-failure \
+            --timeout 900 || status=$?
+          for core in "$core_dir"/*.core; do
+            [ -f "$core" ] || continue
+            pkg_add -v gdb
+            egdb -batch -ex 'thread apply all bt full' /home/build/bin/test_bitcoin-qt "$core"
+          done
+          exit $status
+
+      - &FUNCTIONAL_TESTS_DEPS
+        name: Install functional test dependencies
+        if: ${{ ! inputs.skip_functional_tests }}
+        run: |
+          set -e
+          pkg_add -U -v py3-pip py3-zmq
+          # The system's `capnproto` package ships static libraries
+          # built without -fPIC, causing relocation errors when linking
+          # pycapnp's shared extension module.
+          #
+          # A two-part workaround is applied:
+          #  1. Force building the bundled libcapnp, which is compiled
+          #     with -fPIC.
+          #  2. Override LDCXXSHARED to drop the -L/usr/local/lib/ that
+          #     Python's sysconfig injects ahead of the bundled library
+          #     directories, and which would otherwise resolve -lcapnp*
+          #     and -lkj* to the system's static archives.
+          if pkg_info -e 'capnproto-*'; then
+            LDCXXSHARED="c++ -pthread -shared -fPIC" pip3 install --break-system-packages pycapnp -C force-bundled-libcapnp=True
+          else
+            pip3 install --break-system-packages pycapnp
+          fi
+          python3 --version
+          python3 -c "import sqlite3; print(f'SQLite {sqlite3.sqlite_version}')"
+          python3 -c "import capnp; print(f'pycapnp {capnp.__version__} / libcapnp {capnp.version.LIBCAPNP_VERSION_MAJOR}.{capnp.version.LIBCAPNP_VERSION_MINOR}.{capnp.version.LIBCAPNP_VERSION_MICRO}')"
+          python3 -c "import zmq; print(f'pyzmq {zmq.__version__} / libzmq {zmq.zmq_version()}')"
+
+      - &CHECK_HOST_DISK_SPACE
+        name: Check host disk space
+        if: ${{ ! inputs.skip_functional_tests }}
+        shell: bash
+        run: df -h
+
+      - &CHECK_VM_DISK_SPACE
+        name: Check VM disk space
+        if: ${{ ! inputs.skip_functional_tests }}
+        # The test datadirs go under /home (--tmpdirprefix), the initial
+        # chain cache under the default temporary directory.
+        run: df -h /home /tmp
+
+      - &RUN_FUNCTIONAL_TESTS
+        name: Run functional tests
+        if: ${{ ! inputs.skip_functional_tests }}
+        run: |
+          set -e
+          ulimit -n 1024
+          # Unbuffered stdout prints "Remaining jobs: ..." in order, which
+          # helps to identify hung tests.
+          export PYTHONUNBUFFERED=1
+          /home/build/test/functional/test_runner.py -j $((${{ env.CI_NCPU }} * 2)) --combinedlogslen=99999999 \
+            --tmpdirprefix /home \
+            --extended \
+            `# See https://github.com/bitcoin/bitcoin/issues/33128.` \
+            --exclude feature_reindex_init \
+            --timeout-factor=16
+
+  openbsd-depends:
+    name: 'OpenBSD ${{ matrix.release }}, depends'
+    runs-on: ubuntu-latest
+    env:
+      PACKAGES: 'bash gmake bison'
+    defaults:
+      run:
+        shell: openbsd {0}
+    strategy: *RELEASE_MATRIX
+
+    steps:
+      - *ANNOTATE_WORKFLOW_INPUTS
+      - *START_VM
+      - *FETCH_SOURCE
+      - *PATCH_SOURCE
+
+      - name: Build depends
+        uses: hebasto/bitcoin-core-nightly/.github/actions/build-depends@main
+        with:
+          vm: openbsd
+          source-dir: /home/bitcoin
+          cache-tag: openbsd-${{ matrix.release }}
+
+      - name: Generate CTest configuration
+        run: |
+          cat << 'EOF' > ctest_config.cmake
+          set(CTEST_SITE "${{ github.repository }}")
+          set(CTEST_BUILD_NAME "OpenBSD ${{ matrix.release }}, depends")
+          set(CTEST_SOURCE_DIRECTORY "/home/bitcoin")
+          set(CTEST_BINARY_DIRECTORY "/home/build")
+          set(CTEST_CMAKE_GENERATOR "Ninja")
+          cmake_host_system_information(RESULT nproc QUERY NUMBER_OF_LOGICAL_CORES)
+          EOF
+
+      - *CDASH_START_UPDATE
+
+      - name: CDash -- Configure
+        run: |
+          cat << 'EOF' > ctest_configure.cmake
+          include(ctest_config.cmake)
+          set(configure_opts
+            "--toolchain /home/bitcoin/depends/x86_64-unknown-openbsd${{ matrix.release }}/toolchain.cmake"
+            "--preset dev-mode"
+            "-DWITH_USDT=OFF"
+            "-DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+          )
+          ctest_start(APPEND)
+          ctest_configure(OPTIONS "${configure_opts}")
+          EOF
+          ctest --extra-verbose --script ctest_configure.cmake
+
+      - *CDASH_BUILD
+      - *CHECK_BITCOIND
+      - *CDASH_TEST
+      - *CDASH_SUBMIT
+      - *DEBUG_GUI_TESTS_MALLOC_S
+      - *FUNCTIONAL_TESTS_DEPS
+      - *CHECK_HOST_DISK_SPACE
+      - *CHECK_VM_DISK_SPACE
+      - *RUN_FUNCTIONAL_TESTS

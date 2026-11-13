@@ -1,0 +1,404 @@
+name: NetBSD nightly (http-unix-sockets)
+on:
+  push:
+    branches: [http-unix-sockets-nightly]
+    paths:
+      - '.github/workflows/netbsd.yml'
+      - 'test/functional/**'
+  pull_request:
+    paths:
+      - '.github/workflows/netbsd.yml'
+      - 'test/functional/**'
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Repository name with owner'
+        required: true
+        default: pinheadmz/bitcoin
+        type: string
+      ref:
+        description: 'Repository reference: refs/heads/<branch>, refs/tags/<tag>, refs/pull/<PR>/head or <commit>'
+        required: true
+        default: refs/heads/http-unix-sockets-nightly
+        type: string
+      skip_functional_tests:
+        description: 'Skip functional tests'
+        required: true
+        default: false
+        type: boolean
+concurrency:
+  group: ${{ github.workflow }}${{ github.event_name != 'pull_request' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # See https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories.
+  CI_NCPU: 4
+  PACKAGES: cmake curl ninja-build python313
+
+jobs:
+  netbsd-syslibs:
+    name: 'NetBSD ${{ matrix.release }}, system libs, no GUI'
+    runs-on: ubuntu-latest
+    env:
+      SYSTEM_PACKAGES: 'boost sqlite3 pkgconf'
+    defaults:
+      run:
+        shell: netbsd {0}
+    strategy: &RELEASE_MATRIX
+      fail-fast: false
+      matrix:
+        # Test all supported releases.
+        # See https://www.netbsd.org/releases/.
+        include:
+          - release: '10.2'
+            pkgsrc_release: '10.0_2026Q2'
+            # The default compiler GCC 10.5.0 does not meet the minimum version requirements.
+            sys_packages: 'gcc14'
+            # Workaround for the following linker warning when using the systems' `net/zeromq` package:
+            # /usr/bin/ld: warning: libstdc++.so.9, needed by /usr/pkg/lib/libzmq.so, may conflict with libstdc++.so.7
+            pkgsrc_build_zeromq: true
+            pkgsrc_compilers: 'CC="/usr/pkg/gcc14/bin/gcc" CXX="/usr/pkg/gcc14/bin/g++"'
+            cmake_vars: '"-DCMAKE_C_COMPILER=/usr/pkg/gcc14/bin/gcc" "-DCMAKE_CXX_COMPILER=/usr/pkg/gcc14/bin/g++"'
+            dep_packages: 'gcc14'
+            dep_options: >-
+              build_CC=/usr/pkg/gcc14/bin/gcc
+              build_CXX=/usr/pkg/gcc14/bin/g++
+              CC=/usr/pkg/gcc14/bin/gcc
+              CXX=/usr/pkg/gcc14/bin/g++
+          - release: '11.1'
+            pkgsrc_release: '11.0_2026Q2'
+            sys_packages: 'zeromq'
+            pkgsrc_build_zeromq: false
+            cmake_vars: '"-DAPPEND_CPPFLAGS=-DKJ_NO_EXCEPTIONS=0"' # Needed for the default GCC 12.5.0.
+            dep_packages: 'gcc15'
+            dep_options: >-
+              build_CC=/usr/pkg/gcc15/bin/gcc
+              build_CXX=/usr/pkg/gcc15/bin/g++
+              CC=/usr/pkg/gcc15/bin/gcc
+              CXX=/usr/pkg/gcc15/bin/g++
+
+    steps:
+      - &ANNOTATE_WORKFLOW_INPUTS
+        name: Annotate with workflow inputs
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          INPUTS_REPOSITORY: ${{ inputs.repository }}
+          INPUTS_REF: ${{ inputs.ref }}
+        shell: bash
+        run: echo "::notice title=inputs::$INPUTS_REPOSITORY $INPUTS_REF"
+
+      - &START_VM
+        name: Start NetBSD ${{ matrix.release }} VM
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          mem: 12288
+          sync: no
+          disable-cache: true
+
+      - name: Install packages
+        run: |
+          set -e
+          export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/x86_64/${{ matrix.pkgsrc_release }}/All;http://ftp.fr.NetBSD.org/pub/pkgsrc/packages/NetBSD/x86_64/${{ matrix.pkgsrc_release }}/All;https://ftp.jaist.ac.jp/pub/pkgsrc/packages/NetBSD/x86_64/${{ matrix.pkgsrc_release }}/All"
+          pkg_info > packages_before
+          pkg_add -u ${{ env.PACKAGES }} ${{ env.SYSTEM_PACKAGES }} ${{ matrix.sys_packages }}
+          pkg_info > packages_after
+          diff -w packages_before packages_after | grep '^>' | sort
+
+      # The preinstalled `devel/capnproto` package is broken.
+      # See https://github.com/bitcoin-core/libmultiprocess/pull/196.
+      - name: Build Cap'n Proto
+        run: |
+          set -e
+          pkg_admin -K /usr/pkg/pkgdb fetch-pkg-vulnerabilities
+          pkg_add -u digest libtool-base mktools cwrappers
+          # https://www.netbsd.org/docs/pkgsrc/getting.html#getting-via-tar
+          ftp ftp://ftp.NetBSD.org/pub/pkgsrc/stable/pkgsrc.tar.gz
+          tar -xzf pkgsrc.tar.gz -C /usr \
+            pkgsrc/devel/capnproto \
+            pkgsrc/devel/libtool-base \
+            pkgsrc/devel/pkgconf \
+            pkgsrc/devel/zlib \
+            pkgsrc/lang/gcc14 \
+            pkgsrc/lang/gcc14-libs \
+            pkgsrc/lang/gcc16 \
+            pkgsrc/mk \
+            pkgsrc/pkgtools \
+            pkgsrc/security/openssl \
+            pkgsrc/sysutils/install-sh/files
+          cd /usr/pkgsrc/devel/capnproto
+          unset PKG_PATH
+          make ${{ matrix.pkgsrc_compilers }} CPPFLAGS="-DKJ_NO_EXCEPTIONS=0" CXXFLAGS="-fPIE" install
+
+      - name: Build ZeroMQ
+        if: matrix.pkgsrc_build_zeromq
+        run: |
+          set -e
+          tar -xzf pkgsrc.tar.gz -C /usr \
+            pkgsrc/net/zeromq \
+            pkgsrc/converters/libiconv \
+            pkgsrc/devel/gettext-lib \
+            pkgsrc/devel/gmake \
+            pkgsrc/lang/gcc14 \
+            pkgsrc/lang/gcc14-libs \
+            pkgsrc/lang/perl5 \
+            pkgsrc/security/libsodium
+          cd /usr/pkgsrc/net/zeromq
+          unset PKG_PATH
+          make ${{ matrix.pkgsrc_compilers }} CXXFLAGS="-fPIE" install
+
+      - &FETCH_SOURCE
+        name: Fetch source tarball
+        run: |
+          set -e
+          curl --location --fail --retry 5 --retry-delay 30 --retry-all-errors --output source.tar.gz https://github.com/${{ inputs.repository || 'pinheadmz/bitcoin' }}/archive/${{ inputs.ref || 'refs/heads/http-unix-sockets-nightly' }}.tar.gz
+          mkdir bitcoin
+          tar -xf source.tar.gz -C bitcoin --strip-components=1
+          rm -rf source.tar.gz
+          # Test data.
+          DIR_UNIT_TEST_DATA="$(pwd)/qa-assets/unit_test_data"
+          mkdir -p "$DIR_UNIT_TEST_DATA"
+          curl --location --fail --retry 5 --retry-delay 30 --retry-all-errors --output "${DIR_UNIT_TEST_DATA}/script_assets_test.json" https://github.com/bitcoin-core/qa-assets/raw/main/unit_test_data/script_assets_test.json
+
+      - &PATCH_SOURCE
+        # The `interface_ipc*` functional tests fail on NetBSD because `-ipcbind`
+        # reserves 1 listening socket plus `ipc::DEFAULT_MAX_CONNECTIONS` (16)
+        # client slots on top of the `maxconnections=76` that the test framework
+        # budgets for FD_SETSIZE (256). bitcoind then prints the
+        # "Reducing -maxconnections ..." warning on stderr, which the framework
+        # treats as a failure.
+        # This is a minimal version of https://github.com/bitcoin/bitcoin/pull/36587.
+        # TODO: Drop this step once that PR is merged.
+        name: Patch functional test framework
+        run: |
+          set -e
+          cat << 'EOF' > ipc-maxconnections.patch
+          --- a/test/functional/test_framework/test_node.py
+          +++ b/test/functional/test_framework/test_node.py
+          @@ -157,5 +157,6 @@ class TestNode():
+                   self.ipc_tmp_dir = None
+                   if ipcbind:
+          +            self.args.append("-maxconnections=59")
+                       self.ipc_socket_path = self.chain_path / "node.sock"
+                       if len(os.fsencode(self.ipc_socket_path)) < UNIX_PATH_MAX:
+                           self.args.append("-ipcbind=unix")
+          EOF
+          patch -d bitcoin -p1 -N < ipc-maxconnections.patch
+
+      - name: Generate CTest configuration
+        run: |
+          cat << 'EOF' > ctest_config.cmake
+          set(CTEST_SITE "${{ github.repository }}")
+          set(CTEST_BUILD_NAME "NetBSD ${{ matrix.release }}, system libs, no GUI")
+          set(CTEST_SOURCE_DIRECTORY "${CTEST_SCRIPT_DIRECTORY}/bitcoin")
+          set(CTEST_BINARY_DIRECTORY "${CTEST_SCRIPT_DIRECTORY}/build")
+          set(CTEST_CMAKE_GENERATOR "Ninja")
+          cmake_host_system_information(RESULT nproc QUERY NUMBER_OF_LOGICAL_CORES)
+          EOF
+
+      - &CDASH_START_UPDATE
+        name: CDash -- Start & Update
+        run: |
+          COMMIT="$(awk -F '"' '/^#define GIT_COMMIT_ID/ {print $2}' bitcoin/src/clientversion.cpp)"
+          echo "set(CTEST_UPDATE_VERSION_OVERRIDE $COMMIT)" >> ctest_update_version_override.cmake
+          cat << 'EOF' > ctest_start_update.cmake
+          include(ctest_config.cmake)
+          ctest_start(${{ case(github.event_name == 'workflow_run', 'Nightly', format('Experimental GROUP {0}', github.event_name)) }})
+          # CTest infers the VCS type from the update command's name. With
+          # CTEST_UPDATE_VERSION_OVERRIDE set no update runs, but CTest still
+          # invokes the command to list local modifications and reports any as
+          # an update error. The command deliberately does not exist, so that
+          # check is skipped on every runner, whether or not git is installed
+          # and whether or not the tree has been patched.
+          set(CTEST_UPDATE_COMMAND not-run/git)
+          include(ctest_update_version_override.cmake)
+          ctest_update()
+          EOF
+          ctest --script ctest_start_update.cmake
+
+      - name: CDash -- Configure
+        run: |
+          cat << 'EOF' > ctest_configure.cmake
+          include(ctest_config.cmake)
+          set(configure_opts
+            "--preset dev-mode"
+            ${{ matrix.cmake_vars }}
+            "-DBUILD_GUI=OFF"
+            "-DWITH_USDT=OFF"
+            "-DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+          )
+          ctest_start(APPEND)
+          ctest_configure(OPTIONS "${configure_opts}")
+          EOF
+          ctest --extra-verbose --script ctest_configure.cmake
+
+      - &CDASH_BUILD
+        name: CDash -- Build
+        run: |
+          cat << 'EOF' > ctest_build.cmake
+          include(ctest_config.cmake)
+          ctest_start(APPEND)
+          ctest_build(PARALLEL_LEVEL ${nproc})
+          EOF
+          ctest --extra-verbose --script ctest_build.cmake
+
+      - &CHECK_BITCOIND
+        name: Check 'bitcoind' executable
+        run: |
+          set -e
+          ls -l build/bin/bitcoind
+          file build/bin/bitcoind
+          ldd build/bin/bitcoind
+          build/bin/bitcoind -version
+
+      - &CDASH_TEST
+        name: CDash -- Test
+        run: |
+          cat << 'EOF' > ctest_test.cmake
+          include(ctest_config.cmake)
+          set(ENV{DIR_UNIT_TEST_DATA} ${CTEST_SCRIPT_DIRECTORY}/qa-assets/unit_test_data)
+          # NetBSD mounts /tmp as a RAM-backed tmpfs capped at a quarter of
+          # the VM's memory (3 GB here). Keep the unit tests' data directories
+          # on disk instead.
+          set(ENV{TMPDIR} ${CTEST_SCRIPT_DIRECTORY})
+          ctest_start(APPEND)
+          ctest_test(
+            PARALLEL_LEVEL ${nproc}
+            RETURN_VALUE test_result
+          )
+          # ctest_test() does not fail the script when tests fail.
+          # The only signal is RETURN_VALUE (0 == all tests passed).
+          if(NOT test_result EQUAL 0)
+            message(FATAL_ERROR "Tests failed: RETURN_VALUE=${test_result}")
+          endif()
+          EOF
+          ctest --script ctest_test.cmake
+
+      - &CDASH_SUBMIT
+        name: CDash -- Submit
+        if: always()
+        run: |
+          cat << 'EOF' > ctest_submit.cmake
+          include(ctest_config.cmake)
+          ctest_start(APPEND)
+          ctest_submit()
+          EOF
+          ctest --script ctest_submit.cmake
+
+      - &FUNCTIONAL_TESTS_DEPS
+        name: Install functional test dependencies
+        if: ${{ ! inputs.skip_functional_tests }}
+        run: |
+          set -e
+          echo "CHECK_OSABI=no" >> /etc/pkg_install.conf
+          pkg_add lsof py313-pip py313-zmq
+          CXXFLAGS="-DKJ_NO_EXCEPTIONS=0" pip-3.13 install pycapnp
+          python3.13 --version
+          python3.13 -c "import sqlite3; print(f'SQLite {sqlite3.sqlite_version}')"
+          python3.13 -c "import capnp; print(f'pycapnp {capnp.__version__} / libcapnp {capnp.version.LIBCAPNP_VERSION_MAJOR}.{capnp.version.LIBCAPNP_VERSION_MINOR}.{capnp.version.LIBCAPNP_VERSION_MICRO}')"
+          python3.13 -c "import zmq; print(f'pyzmq {zmq.__version__} / libzmq {zmq.zmq_version()}')"
+
+      - &CHECK_HOST_DISK_SPACE
+        name: Check host disk space
+        if: ${{ ! inputs.skip_functional_tests }}
+        shell: bash
+        run: df -h
+
+      - &CHECK_VM_DISK_SPACE
+        name: Check VM disk space
+        if: ${{ ! inputs.skip_functional_tests }}
+        # The test datadirs go under the working directory (--tmpdirprefix),
+        # the initial chain cache under the default temporary directory.
+        run: df -h "$PWD" /tmp
+
+      - &RUN_FUNCTIONAL_TESTS
+        name: Run functional tests
+        if: ${{ ! inputs.skip_functional_tests }}
+        run: |
+          set -e
+          # Unbuffered stdout prints "Remaining jobs: ..." in order, which
+          # helps to identify hung tests.
+          export PYTHONUNBUFFERED=1
+          python3.13 build/test/functional/test_runner.py -j $((${{ env.CI_NCPU }} * 2)) --combinedlogslen=99999999 \
+            --tmpdirprefix "$PWD" \
+            --extended \
+            `# See https://github.com/bitcoin/bitcoin/issues/33128.` \
+            --exclude feature_reindex_init \
+            `# p2p_invalid_messages causes OOM. Running separately in the next command.` \
+            --exclude p2p_invalid_messages \
+            --timeout-factor=8
+          python3.13 build/test/functional/test_runner.py p2p_invalid_messages --combinedlogslen=99999999 \
+            --tmpdirprefix "$PWD" \
+            --timeout-factor=8
+
+  netbsd-depends:
+    name: 'NetBSD ${{ matrix.release }}, depends, no GUI'
+    runs-on: ubuntu-latest
+    env:
+      DEP_PACKAGES: 'gmake perl'
+    defaults:
+      run:
+        shell: netbsd {0}
+    strategy: *RELEASE_MATRIX
+
+    steps:
+      - *ANNOTATE_WORKFLOW_INPUTS
+      - *START_VM
+
+      - name: Install packages
+        run: |
+          set -e
+          export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/x86_64/${{ matrix.pkgsrc_release }}/All;http://ftp.fr.NetBSD.org/pub/pkgsrc/packages/NetBSD/x86_64/${{ matrix.pkgsrc_release }}/All;https://ftp.jaist.ac.jp/pub/pkgsrc/packages/NetBSD/x86_64/${{ matrix.pkgsrc_release }}/All"
+          pkg_info > packages_before
+          pkg_add -u ${{ env.PACKAGES }} ${{ env.DEP_PACKAGES }} ${{ matrix.dep_packages }}
+          pkg_info > packages_after
+          diff -w packages_before packages_after | grep '^>' | sort
+
+      - *FETCH_SOURCE
+      - *PATCH_SOURCE
+
+      - name: Build depends
+        uses: hebasto/bitcoin-core-nightly/.github/actions/build-depends@main
+        with:
+          vm: netbsd
+          options: ${{ matrix.dep_options }}
+          source-dir: /root/bitcoin
+          cache-tag: netbsd-${{ matrix.release }}
+
+      - name: Generate CTest configuration
+        run: |
+          cat << 'EOF' > ctest_config.cmake
+          set(CTEST_SITE "${{ github.repository }}")
+          set(CTEST_BUILD_NAME "NetBSD ${{ matrix.release }}, depends, no GUI")
+          set(CTEST_SOURCE_DIRECTORY "${CTEST_SCRIPT_DIRECTORY}/bitcoin")
+          set(CTEST_BINARY_DIRECTORY "${CTEST_SCRIPT_DIRECTORY}/build")
+          set(CTEST_CMAKE_GENERATOR "Ninja")
+          cmake_host_system_information(RESULT nproc QUERY NUMBER_OF_LOGICAL_CORES)
+          EOF
+
+      - *CDASH_START_UPDATE
+
+      - name: CDash -- Configure
+        run: |
+          cat << 'EOF' > ctest_configure.cmake
+          include(ctest_config.cmake)
+          set(configure_opts
+            "--toolchain /root/bitcoin/depends/x86_64-unknown-netbsd${{ matrix.release }}/toolchain.cmake"
+            "--preset dev-mode"
+            "-DBUILD_GUI=OFF"
+            "-DWITH_USDT=OFF"
+            "-DCMAKE_COMPILE_WARNING_AS_ERROR=ON"
+          )
+          ctest_start(APPEND)
+          ctest_configure(OPTIONS "${configure_opts}")
+          EOF
+          ctest --extra-verbose --script ctest_configure.cmake
+
+      - *CDASH_BUILD
+      - *CHECK_BITCOIND
+      - *CDASH_TEST
+      - *CDASH_SUBMIT
+      - *FUNCTIONAL_TESTS_DEPS
+      - *CHECK_HOST_DISK_SPACE
+      - *CHECK_VM_DISK_SPACE
+      - *RUN_FUNCTIONAL_TESTS
